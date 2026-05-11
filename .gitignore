@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Defensive file-type guards — never track these anywhere in the tree
+*.fit
+*.tcx
+*.gpx
+*.key
+.env
+*.pem
+secrets/
+
+# Claude Code local state (not for the public repo)
+.claude/
+!.claude/settings.json
+
+# Generated charts (regenerable from data)
+*.png
+*.jpg
+!notes/**/*.png
+!notes/**/*.jpg
+
+# Personal rider data — local only
+/USER_PROFILE.md
+
+/rides/*
+!/rides/.gitkeep
+!/rides/.gitignore
+!/rides/analyses/
+/rides/analyses/*
+!/rides/analyses/.gitkeep
+!/rides/analyses/.gitignore
+!/rides/fit/
+/rides/fit/*
+!/rides/fit/.gitkeep
+!/rides/fit/.gitignore
+!/rides/charts/
+/rides/charts/*
+!/rides/charts/.gitkeep
+!/rides/charts/.gitignore
+
+/routes/*
+!/routes/.gitkeep
+!/routes/.gitignore
+
+/tests/*
+!/tests/.gitkeep
+!/tests/.gitignore
+
+/notes/*
+!/notes/.gitkeep
+!/notes/.gitignore
+!/notes/strength-training-evidence-base.md
+
+/plans/*
+!/plans/.gitkeep
+!/plans/.gitignore
+
+/body-comp/*
+!/body-comp/.gitkeep
+!/body-comp/.gitignore
+
+# Allow public scaffolding
+!/examples/
+!/USER_PROFILE.example.md
+
+# Conda diagnostic snapshots — not the canonical env file
+environment_cleaned.yml
+environment_export.yml

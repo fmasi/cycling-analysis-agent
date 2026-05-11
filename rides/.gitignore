@@ -1,0 +1,7 @@
+# Personal data — keep this directory but ignore its contents.
+*
+!.gitkeep
+!.gitignore
+!analyses/
+!fit/
+!charts/
