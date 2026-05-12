@@ -33,11 +33,9 @@ import numpy as np
 
 # Import physics model and profile from same directory
 sys.path.insert(0, str(Path(__file__).parent))
-from physics_model import (
-    FTP, MAP_WORKING, predict_speed, ZONES,
-    SYSTEM_WEIGHT_KG, RIDER_WEIGHT_KG
-)
-from profile import MAX_HR_BPM, REST_HR_BPM
+from physics_model import FTP, ZONES
+from profile import MAX_HR_BPM, REST_HR_BPM, RIDER_WEIGHT_KG
+from bike_config import BikeConfig
 
 
 # Moving-time threshold: speed below this counts as "stopped". 1 km/h chosen
@@ -66,6 +64,32 @@ MOVING_WIN_S = 5
 #
 # Single-ride calibration — re-tune once 3-5 more dual-device rides are on disk.
 ASCENT_MEDIAN_WINDOW_S = 45
+
+
+def _auto_detect_bike(path) -> str:
+    """Return a bike slug guess based on power-data presence in a FIT file.
+
+    FIT with any 'power' records → 'tripster' (high confidence — only the
+    Tripster carries a power meter).
+    FIT with no 'power' records → 'brompton_g' (high confidence — the
+    Brompton has no power meter; this is the strongest discriminator we have).
+
+    Used only when the CLI omits --bike. An explicit --bike always wins.
+    Emits a one-line stderr note so the rider sees the inference.
+    """
+    fit = fitparse.FitFile(str(path))
+    has_power = False
+    for msg in fit.get_messages("record"):
+        if msg.get_value("power") is not None:
+            has_power = True
+            break
+    slug = "tripster" if has_power else "brompton_g"
+    print(
+        f"auto-detected bike: '{slug}' "
+        f"(power records {'present' if has_power else 'absent'})",
+        file=sys.stderr,
+    )
+    return slug
 
 
 def parse_fit(path):
@@ -354,8 +378,14 @@ def find_climbs(distance_m, altitude_m, min_length_m=300, min_gain_m=20,
     return climbs
 
 
-def analyse(path):
-    """Top-level analysis. Returns a dict suitable for JSON or markdown."""
+def analyse(path, *, bike: BikeConfig | None = None, surface: str | None = None):
+    """Top-level analysis. Returns a dict suitable for JSON or markdown.
+
+    `bike` and `surface` are stored on the result dict so format_markdown can
+    render a Bike/Surface header. They do not currently feed back into the
+    parsed metrics (TSS / NP / IF come from session-stored values), but they
+    will once Brompton-specific hrTSS calibration lands in a later task.
+    """
     session, records, laps = parse_fit(path)
     arrays = to_arrays(records)
 
@@ -386,6 +416,16 @@ def analyse(path):
         'threshold_power_used_w': float(session.get('threshold_power', 0)) if session else 0,
         'num_laps': int(session.get('num_laps', 0)) if session else 0,
     }
+
+    # Bike + surface metadata (Task 9). Optional — when omitted, the markdown
+    # header skips the bike block. Stored on the result dict so JSON consumers
+    # see which bike the ride was attributed to.
+    if bike is not None:
+        result['bike_slug'] = bike.slug
+        result['bike_name'] = bike.name
+        result['surface'] = surface
+        result['has_power_meter'] = bike.has_power_meter
+        result['has_assist'] = bike.assist is not None
 
     if arrays is None or len(arrays['time_s']) < 10:
         result['note'] = 'Insufficient records to compute curves/zones'
@@ -470,7 +510,8 @@ def analyse(path):
     return result
 
 
-def pair_analyse(path_a, path_b):
+def pair_analyse(path_a, path_b, *, bike: BikeConfig | None = None,
+                  surface: str | None = None):
     """Analyse two FITs from the same ride and merge field-by-field.
 
     Pairing validation: same sport, start times within 30 min, distance
@@ -484,10 +525,12 @@ def pair_analyse(path_a, path_b):
         - HR: whichever file has HR samples > 0.
         - Power: whichever file has power samples > 0.
 
+    `bike` / `surface` are stored on the merged result for the markdown header.
+
     Returns (merged_result, sources, warnings).
     """
-    a = analyse(path_a)
-    b = analyse(path_b)
+    a = analyse(path_a, bike=bike, surface=surface)
+    b = analyse(path_b, bike=bike, surface=surface)
 
     warnings = []
     sa, sb = a.get('sport', ''), b.get('sport', '')
@@ -587,6 +630,17 @@ def format_markdown_paired(merged, sources, warnings):
     lines = []
     title = Path(merged['file']).stem
     lines.append(f"# Ride analysis — {title} (paired)\n")
+    # Bike + surface header (Task 9). Mirrors format_markdown().
+    if merged.get('bike_slug'):
+        lines.append(f"**Bike:** {merged.get('bike_name', merged['bike_slug'])} "
+                     f"(`{merged['bike_slug']}`)  ")
+        if merged.get('surface'):
+            lines.append(f"**Surface:** {merged['surface']}  ")
+        if merged.get('has_assist'):
+            lines.append("**Battery % start:** _pending rider input_  ")
+            lines.append("**Battery % end:** _pending rider input_  ")
+            lines.append("**Assist pattern:** _pending rider input_  ")
+        lines.append("")
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
 
     lines.append("## Sources\n")
@@ -646,6 +700,19 @@ def format_markdown(result):
     """Format an analysis dict as markdown for rides/analyses/."""
     lines = []
     lines.append(f"# Ride analysis — {Path(result['file']).stem}\n")
+    # Bike + surface header (Task 9). Battery placeholders are emitted for
+    # assisted bikes so the agent fills them in during the workflow
+    # calibration loop.
+    if result.get('bike_slug'):
+        lines.append(f"**Bike:** {result.get('bike_name', result['bike_slug'])} "
+                     f"(`{result['bike_slug']}`)  ")
+        if result.get('surface'):
+            lines.append(f"**Surface:** {result['surface']}  ")
+        if result.get('has_assist'):
+            lines.append("**Battery % start:** _pending rider input_  ")
+            lines.append("**Battery % end:** _pending rider input_  ")
+            lines.append("**Assist pattern:** _pending rider input_  ")
+        lines.append("")
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     lines.append(f"Source: `{result['file']}`\n")
     lines.append("\n## Summary\n")
@@ -729,6 +796,24 @@ def format_markdown(result):
     return '\n'.join(lines) + '\n'
 
 
+def _resolve_bike_for_fit(args, fit_path):
+    """Wrap resolve_bike with FIT-aware auto-detection.
+
+    When --bike is omitted, peek at the FIT's power records to guess the bike
+    (Tripster vs Brompton). An explicit --bike always wins. Returns the same
+    tuple shape as resolve_bike(): (bike, surface, assist_level).
+    """
+    import copy
+
+    from bike_cli import resolve_bike
+
+    if args.bike is None:
+        local = copy.copy(args)
+        local.bike = _auto_detect_bike(fit_path)
+        return resolve_bike(local)
+    return resolve_bike(args)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Analyse FIT files for cycling.')
     parser.add_argument('files', nargs='*', help='FIT file path(s) for single-file analysis')
@@ -739,13 +824,21 @@ def main():
                         help='Output JSON instead of markdown')
     parser.add_argument('--save', action='store_true',
                         help='Save markdown output to rides/analyses/<name>.md')
+
+    from bike_cli import add_bike_args
+    add_bike_args(parser)
+
     args = parser.parse_args()
 
     if not args.files and not args.pair:
         parser.error("either positional FIT files or --pair FIT_A FIT_B is required")
 
     if args.pair:
-        merged, sources, warnings = pair_analyse(args.pair[0], args.pair[1])
+        # Auto-detect from FIT_A (the typical terrain source); applies to both
+        # halves of the pair since one ride = one bike.
+        bike, surface, _ = _resolve_bike_for_fit(args, args.pair[0])
+        merged, sources, warnings = pair_analyse(
+            args.pair[0], args.pair[1], bike=bike, surface=surface)
         if args.json:
             print(json.dumps({'merged': merged, 'sources': sources,
                               'warnings': warnings}, indent=2, default=str))
@@ -763,7 +856,8 @@ def main():
         return
 
     for f in args.files:
-        result = analyse(f)
+        bike, surface, _ = _resolve_bike_for_fit(args, f)
+        result = analyse(f, bike=bike, surface=surface)
         if args.json:
             print(json.dumps(result, indent=2, default=str))
         else:
