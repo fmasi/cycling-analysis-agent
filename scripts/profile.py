@@ -13,22 +13,21 @@ Defaults are deliberately neutral:
     AC (1-min)      350 W
     NM (5-15s)      600 W
     Rider weight    75.0 kg     (for W/kg)
-    Bike weight     9.0 kg
-    Kit weight      3.0 kg      (shoes, helmet, bottles, etc.)
-    System weight   87.0 kg     (rider + bike + kit)
-    F/R split       48 / 52     (Silca default — used when no measurement exists)
-    CdA             0.30
-    CRR             0.0055
-    Drivetrain eff  0.97
+    CRR             0.0055      (physics fallback; bikes: block is authoritative)
     Air density     1.225 kg/m^3
     Gravity         9.81 m/s^2
-    Wheel circ.     2.155 m     (700c x 32mm)
+    Wheel circ.     2.155 m     (700c x 32mm; bikes: block is authoritative)
     Max HR          190 bpm
     Rest HR         55 bpm
     LTHR            165 bpm
 
+Bike-specific constants (CdA, CRR per surface, system weight, drivetrain
+efficiency, F/R split) live in the `bikes:` block and are loaded via
+`BikeConfig` / `load_bike()` in `bike_config.py`. The legacy physics: alias
+block has been removed.
+
 Usage:
-    from profile import FTP, MAP_WORKING, RIDER_WEIGHT_KG, SYSTEM_WEIGHT_KG
+    from profile import FTP, MAP_WORKING, RIDER_WEIGHT_KG
     # or, when you need everything:
     from profile import load_profile
     p = load_profile()
@@ -71,12 +70,6 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "rest_hr_bpm": 55,
     },
     "physics": {
-        "bike_weight_kg": 9.0,
-        "kit_weight_kg": 3.0,
-        "system_weight_kg": 87.0,            # rider + bike + kit
-        "cda": 0.30,
-        "fr_split_front_pct": 48,            # Silca's 48/52 reference
-        "drivetrain_efficiency": 0.97,
         "crr": 0.0055,
         "air_density_kg_m3": 1.225,
         "gravity_m_s2": 9.81,
@@ -265,18 +258,14 @@ LTHR_BPM: int = int(_p["fitness"]["lthr_bpm"])
 MAX_HR_BPM: int = int(_p["fitness"]["max_hr_bpm"])
 REST_HR_BPM: int = int(_p["fitness"].get("rest_hr_bpm", DEFAULTS["fitness"]["rest_hr_bpm"]))
 
-# Body / physics
+# Body
 RIDER_WEIGHT_KG: float = float(_p["body"]["weight_kg"])
-BIKE_WEIGHT_KG: float = float(_p["physics"]["bike_weight_kg"])
-KIT_WEIGHT_KG: float = float(_p["physics"].get("kit_weight_kg", DEFAULTS["physics"]["kit_weight_kg"]))
-SYSTEM_WEIGHT_KG: float = float(_p["physics"]["system_weight_kg"])
-CDA_DEFAULT: float = float(_p["physics"]["cda"])
+
+# Physics constants (bike-agnostic; bike-specific values live in BikeConfig)
 CRR_DEFAULT: float = float(_p["physics"]["crr"])
-DRIVETRAIN_EFFICIENCY: float = float(_p["physics"]["drivetrain_efficiency"])
 AIR_DENSITY: float = float(_p["physics"]["air_density_kg_m3"])
 GRAVITY: float = float(_p["physics"]["gravity_m_s2"])
 WHEEL_CIRCUMFERENCE_M: float = float(_p["physics"]["wheel_circ_m"])
-FR_SPLIT_FRONT_PCT: float = float(_p["physics"]["fr_split_front_pct"])
 
 
 def power_zone_bounds() -> list[tuple[str, int, int]]:

@@ -19,12 +19,6 @@ from profile import (  # noqa: E402
     MAP_WORKING,
     AC_FRESH_EST,
     NM_PEAK,
-    RIDER_WEIGHT_KG,
-    BIKE_WEIGHT_KG,
-    SYSTEM_WEIGHT_KG,
-    CDA_DEFAULT,
-    CRR_DEFAULT,
-    DRIVETRAIN_EFFICIENCY,
     AIR_DENSITY,
     GRAVITY,
     WHEEL_CIRCUMFERENCE_M,
@@ -32,9 +26,9 @@ from profile import (  # noqa: E402
 )
 from bike_config import BikeConfig, load_bike
 
-# CRR presets — see CLAUDE.md for when each applies. The "default" used by the
-# physics functions is `CRR_DEFAULT` (loaded from the profile); these are
-# named alternatives the rider can pass explicitly.
+# CRR presets — see CLAUDE.md for when each applies. Bike-specific CRR is set
+# in the bikes: block (loaded via BikeConfig); these named constants are
+# alternatives the rider can pass explicitly for one-off calculations.
 CRR_OPTIMAL = 0.0050        # latex/TPU at Silca-optimal pressure
 CRR_MID = 0.0055            # intermediate pressure
 CRR_OVERPRESSURE = 0.0058   # high pressure above break-point, OR butyl tubes
@@ -161,34 +155,6 @@ def zone_for_power(power_w):
     if power_w < ZONES[0][1]:
         return ZONES[0][0]
     return ZONES[-1][0]
-
-
-def predict_speed_legacy(power_crank_w, grade_pct, system_weight_kg=None, cda=None,
-                          crr=None, eta=None, rho=AIR_DENSITY, g=GRAVITY):
-    """Deprecated: pre-bike-aware signature. Routes through the default bike.
-
-    Kept for backwards compatibility with analyse_gpx.py and analyse_fit.py until
-    those callers migrate to the new bike-aware predict_speed() signature (Tasks 8/9).
-    """
-    bike = load_bike()  # default
-    sw = system_weight_kg if system_weight_kg is not None else bike.system_weight_kg_default
-    # If caller passed explicit cda/crr/eta overrides, build a temporary BikeConfig clone.
-    # Otherwise delegate to the bike's own values.
-    if cda is not None or crr is not None or eta is not None:
-        import dataclasses
-        surface = bike.surfaces_supported[0]
-        crr_val = crr if crr is not None else bike.crr_by_surface[surface]
-        override_bike = dataclasses.replace(
-            bike,
-            cda=cda if cda is not None else bike.cda,
-            drivetrain_efficiency=eta if eta is not None else bike.drivetrain_efficiency,
-            crr_by_surface={**bike.crr_by_surface, surface: crr_val},
-        )
-        return predict_speed(power_crank_w, grade_pct, bike=override_bike,
-                             surface=surface, system_weight_kg=sw, rho=rho, g=g)
-    return predict_speed(power_crank_w, grade_pct, bike=bike,
-                         surface=bike.surfaces_supported[0],
-                         system_weight_kg=sw, rho=rho, g=g)
 
 
 from dataclasses import dataclass
