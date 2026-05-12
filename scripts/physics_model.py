@@ -191,6 +191,83 @@ def predict_speed_legacy(power_crank_w, grade_pct, system_weight_kg=None, cda=No
                          system_weight_kg=sw, rho=rho, g=g)
 
 
+from dataclasses import dataclass
+
+
+@dataclass
+class AssistedSpeedResult:
+    speed_kmh: float
+    rider_w: float
+    motor_w: float
+    wh_per_hour: float
+
+
+def solve_speed_with_assist(
+    rider_w: float,
+    grade_pct: float,
+    *,
+    bike: BikeConfig,
+    surface: str,
+    system_weight_kg: float,
+    assist_level: str,
+    rho: float = AIR_DENSITY,
+    g: float = GRAVITY,
+) -> AssistedSpeedResult:
+    """Solve combined rider+motor wheel power for an e-assist bike.
+
+    Motor adds power proportional to rider input via bike.assist.level_share[level],
+    capped at bike.assist.rated_w, but only when speed < bike.assist.cutoff_kph.
+    Above cutoff, motor_w = 0.
+
+    Returns rider_w, motor_w, combined speed, and Wh/hour drain.
+    """
+    assert bike.assist is not None, f"bike '{bike.slug}' has no assist block"
+    share = bike.assist.level_share[assist_level]
+    motor_cap = bike.assist.rated_w
+    cutoff_kmh = bike.assist.cutoff_kph
+    crr = bike.crr_by_surface[surface]
+    eta = bike.drivetrain_efficiency
+    theta = math.atan(grade_pct / 100.0)
+
+    # Start optimistic: assume motor is active at min(share * rider_w, motor_cap).
+    candidate_motor = min(share * rider_w, motor_cap)
+    p_wheel = (rider_w + candidate_motor) * eta
+
+    lo, hi = 0.01, 30.0  # m/s
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        rhs = (0.5 * rho * bike.cda * mid * mid + crr * system_weight_kg * g
+               + system_weight_kg * g * math.sin(theta)) * mid
+        if rhs < p_wheel:
+            lo = mid
+        else:
+            hi = mid
+    v_ms = 0.5 * (lo + hi)
+    v_kmh = v_ms * 3.6
+
+    if v_kmh > cutoff_kmh:
+        # Above cutoff → motor disengages; re-solve with rider only.
+        candidate_motor = 0.0
+        p_wheel = rider_w * eta
+        lo, hi = 0.01, 30.0
+        for _ in range(80):
+            mid = 0.5 * (lo + hi)
+            rhs = (0.5 * rho * bike.cda * mid * mid + crr * system_weight_kg * g
+                   + system_weight_kg * g * math.sin(theta)) * mid
+            if rhs < p_wheel:
+                lo = mid
+            else:
+                hi = mid
+        v_kmh = 0.5 * (lo + hi) * 3.6
+
+    return AssistedSpeedResult(
+        speed_kmh=v_kmh,
+        rider_w=float(rider_w),
+        motor_w=float(candidate_motor),
+        wh_per_hour=float(candidate_motor),
+    )
+
+
 if __name__ == '__main__':
     # Self-test: print climb predictions at FTP and MAP for a 9% grade,
     # which is roughly the average of a Cat-3 ascent.
