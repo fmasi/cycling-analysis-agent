@@ -23,9 +23,33 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from physics_model import (
     FTP, MAP_WORKING, predict_speed, vam_at_power,
-    power_for_60rpm_in_lowest_gear, SYSTEM_WEIGHT_KG,
-    speed_at_cadence_rpm
+    power_for_60rpm_in_lowest_gear,
+    speed_at_cadence_rpm, solve_speed_with_assist,
 )
+from bike_config import BikeConfig
+
+
+# HR zone reference text — derived from USER_PROFILE.md (Karvonen, max=192,
+# rest=53). Used by the assisted-bike pacing column when the bike has no
+# power meter. Returns (label, suggestion) for a given grade.
+def _hr_target_for_grade(grade_pct: float) -> tuple[str, str]:
+    if grade_pct < 3:
+        return ("Z2 (137-150 bpm)", "")
+    if grade_pct < 5:
+        return ("Z3 (150-164 bpm)", "")
+    if grade_pct < 8:
+        return ("Z3-Z4 (155-170 bpm)", "")
+    return ("Z4 max (164-178 bpm)", "consider walking")
+
+
+def _assist_level_for_grade(bike: BikeConfig, grade_pct: float) -> str:
+    """Per-grade recommended assist level for an e-assist bike."""
+    assert bike.assist is not None
+    if grade_pct < 5:
+        return bike.assist.default_level_flat
+    if grade_pct < 10:
+        return bike.assist.default_level_climb_5pct
+    return bike.assist.default_level_climb_10pct
 
 
 def haversine_m(lat1, lon1, lat2, lon2):
@@ -181,26 +205,43 @@ def find_climbs(dists, eles, min_length_m=300, min_gain_m=20, min_grade=0.015):
     return climbs
 
 
-def predict_climb(climb):
-    """Compute speed/duration/VAM/gear info for a single climb."""
+def predict_climb(climb, *, bike: BikeConfig, surface: str,
+                   assist_level: str | None = None,
+                   rider_w_assisted: float = 120.0):
+    """Compute speed/duration/VAM/gear info for a single climb.
+
+    For bikes with a power meter (`bike.has_power_meter`), populates the
+    FTP/MAP/Z3/Z2 speed columns. For assisted bikes, additionally records
+    per-climb HR target, recommended assist level, assisted speed, and
+    Wh consumed on the climb.
+    """
     grad = climb['avg_grad_pct']
     length_km = climb['length_m'] / 1000
+    sw = bike.system_weight_kg_default
     out = {}
 
+    # Self-powered speed targets (always computed — useful even for assisted
+    # bikes when above the cutoff).
     for label, power in [('FTP_171', FTP), ('MAP_210', MAP_WORKING),
                           ('Z3_130', 130), ('Z2_110', 110)]:
-        speed = predict_speed(power, grad)
+        speed = predict_speed(power, grad, bike=bike, surface=surface,
+                               system_weight_kg=sw)
         out[f'speed_kmh_{label}'] = round(speed, 2)
         out[f'time_min_{label}'] = round(length_km / speed * 60, 1) if speed > 0 else None
 
-    out['vam_at_ftp_mh'] = round(vam_at_power(FTP, grad), 0)
+    out['vam_at_ftp_mh'] = round(
+        vam_at_power(FTP, grad, bike=bike, surface=surface, system_weight_kg=sw), 0)
     # Survival check at max grade
     if climb['max_grad_pct'] > 5:
         out['power_for_60rpm_at_max_grad_w'] = round(
-            power_for_60rpm_in_lowest_gear(climb['max_grad_pct']), 0)
+            power_for_60rpm_in_lowest_gear(
+                climb['max_grad_pct'], bike=bike, surface=surface,
+                system_weight_kg=sw), 0)
 
     # Pacing intent based on duration
-    time_at_ftp = length_km / predict_speed(FTP, grad) * 60
+    ftp_speed = predict_speed(FTP, grad, bike=bike, surface=surface,
+                                system_weight_kg=sw)
+    time_at_ftp = length_km / ftp_speed * 60 if ftp_speed > 0 else float('inf')
     if time_at_ftp < 3:
         intent = 'AC zone (sub-3min) — push hard up to 250W'
     elif time_at_ftp <= 8:
@@ -211,16 +252,42 @@ def predict_climb(climb):
         intent = 'Sweet Spot (20+ min) — 145-162W (85-94% FTP)'
     out['recommended_intent'] = intent
 
+    # Assisted-bike pacing block.
+    if bike.assist is not None:
+        hr_label, hr_note = _hr_target_for_grade(grad)
+        level = _assist_level_for_grade(bike, grad)
+        result = solve_speed_with_assist(
+            rider_w=rider_w_assisted,
+            grade_pct=grad,
+            bike=bike, surface=surface,
+            system_weight_kg=sw,
+            assist_level=level,
+        )
+        duration_h = (length_km / result.speed_kmh) if result.speed_kmh > 0 else 0.0
+        wh_used = result.wh_per_hour * duration_h
+        out['assisted'] = {
+            'hr_target': hr_label,
+            'hr_note': hr_note,
+            'assist_level': level,
+            'rider_w': round(result.rider_w, 0),
+            'motor_w': round(result.motor_w, 0),
+            'speed_kmh': round(result.speed_kmh, 1),
+            'time_min': round(duration_h * 60, 1),
+            'wh_used': round(wh_used, 1),
+        }
+
     return out
 
 
-def estimate_tss(distance_km, climbs, target_if=0.65):
+def estimate_tss(distance_km, climbs, *, bike: BikeConfig, surface: str,
+                  target_if=0.65):
     """
     Rough TSS estimate for a planned ride.
 
     Assumes ~25 km/h average on flat sections, climbs computed at predicted speed,
     target IF chosen by rider.
     """
+    sw = bike.system_weight_kg_default
     if not climbs:
         flat_km = distance_km
         climb_min = 0
@@ -229,7 +296,9 @@ def estimate_tss(distance_km, climbs, target_if=0.65):
         flat_km = distance_km - climb_km
         # Climbs done at ~75% FTP avg → speed depends on grade
         climb_min = sum(
-            (c['length_m'] / 1000) / predict_speed(0.75 * FTP, c['avg_grad_pct']) * 60
+            (c['length_m'] / 1000) / predict_speed(
+                0.75 * FTP, c['avg_grad_pct'], bike=bike, surface=surface,
+                system_weight_kg=sw) * 60
             for c in climbs
         )
 
@@ -245,7 +314,8 @@ def estimate_tss(distance_km, climbs, target_if=0.65):
     }
 
 
-def analyse(path, include_coords=False):
+def analyse(path, *, bike: BikeConfig, surface: str,
+             assist_level: str | None = None, include_coords=False):
     data = parse_gpx(path)
     if data is None:
         return {'file': str(path), 'error': 'No trackpoints found'}
@@ -271,7 +341,8 @@ def analyse(path, include_coords=False):
             ]
 
     for c in climbs:
-        c['predictions'] = predict_climb(c)
+        c['predictions'] = predict_climb(
+            c, bike=bike, surface=surface, assist_level=assist_level)
 
     # Same start/end?
     is_loop = (abs(lats[0] - lats[-1]) < 0.001 and
@@ -280,6 +351,12 @@ def analyse(path, include_coords=False):
     result = {
         'file': str(path),
         'route_name': data['name'],
+        'bike_slug': bike.slug,
+        'bike_name': bike.name,
+        'surface': surface,
+        'assist_level': assist_level,
+        'has_power_meter': bike.has_power_meter,
+        'has_assist': bike.assist is not None,
         'distance_km': round(float(dists[-1] / 1000), 2),
         'total_ascent_m': round(total_ascent, 0),
         'total_descent_m': round(total_descent, 0),
@@ -289,7 +366,8 @@ def analyse(path, include_coords=False):
         'start_lon': round(float(lons[0]), 5),
         'is_loop': is_loop,
         'climbs': climbs,
-        'tss_estimate': estimate_tss(dists[-1] / 1000, climbs),
+        'tss_estimate': estimate_tss(
+            dists[-1] / 1000, climbs, bike=bike, surface=surface),
     }
 
     # Add full trackpoints if requested (for regression tests)
@@ -306,6 +384,14 @@ def format_markdown(r):
     """Render analysis as markdown for routes/."""
     lines = []
     lines.append(f"# Route — {r.get('route_name', 'Unknown')}\n")
+    # Bike + surface header (Task 8 Step 4).
+    if r.get('bike_slug'):
+        lines.append(f"**Bike:** {r.get('bike_name', r['bike_slug'])} "
+                     f"(`{r['bike_slug']}`)  ")
+        lines.append(f"**Surface:** {r['surface']}  ")
+        if r.get('has_assist') and r.get('assist_level'):
+            lines.append(f"**Assist level (default):** {r['assist_level']}  ")
+        lines.append("")
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     lines.append(f"Source: `{r['file']}`\n")
     lines.append("\n## Summary\n")
@@ -323,8 +409,48 @@ def format_markdown(r):
     lines.append(f"- **TSS at IF 0.70** (moderate endurance): ~{te['estimated_tss_at_if_070']:.0f}")
     lines.append(f"- **TSS at IF 0.75** (firm endurance): ~{te['estimated_tss_at_if_075']:.0f}")
 
+    has_power_meter = r.get('has_power_meter', True)
+
     if r['climbs']:
         lines.append(f"\n## Climbs ({len(r['climbs'])})\n")
+
+        # Summary table — branch on bike capability.
+        if has_power_meter:
+            lines.append(
+                "| # | km | length | avg grade | Power @ FTP (W) | Speed @ FTP (km/h) "
+                "| Power @ MAP (W) | Speed @ MAP (km/h) |")
+            lines.append(
+                "|---|----|--------|-----------|-----------------|--------------------"
+                "|-----------------|--------------------|")
+            for i, c in enumerate(r['climbs'], 1):
+                p = c['predictions']
+                lines.append(
+                    f"| {i} | {c['start_km']:.1f}-{c['end_km']:.1f} "
+                    f"| {c['length_m']:.0f} m | {c['avg_grad_pct']:.1f}% "
+                    f"| {FTP} | {p['speed_kmh_FTP_171']} "
+                    f"| {MAP_WORKING} | {p['speed_kmh_MAP_210']} |")
+        else:
+            lines.append(
+                "| # | km | length | avg grade | HR target | Assist | Speed (km/h) | Wh used |")
+            lines.append(
+                "|---|----|--------|-----------|-----------|--------|--------------|---------|")
+            for i, c in enumerate(r['climbs'], 1):
+                p = c['predictions']
+                a = p.get('assisted')
+                if a is None:
+                    lines.append(
+                        f"| {i} | {c['start_km']:.1f}-{c['end_km']:.1f} "
+                        f"| {c['length_m']:.0f} m | {c['avg_grad_pct']:.1f}% "
+                        f"| — | — | — | — |")
+                else:
+                    lines.append(
+                        f"| {i} | {c['start_km']:.1f}-{c['end_km']:.1f} "
+                        f"| {c['length_m']:.0f} m | {c['avg_grad_pct']:.1f}% "
+                        f"| {a['hr_target']} | {a['assist_level']} "
+                        f"| {a['speed_kmh']} | {a['wh_used']:.1f} |")
+
+        lines.append("")
+
         for i, c in enumerate(r['climbs'], 1):
             p = c['predictions']
             lines.append(f"### Climb {i}: km {c['start_km']:.2f} – {c['end_km']:.2f}\n")
@@ -333,17 +459,29 @@ def format_markdown(r):
                          f"**Avg grade**: {c['avg_grad_pct']:.1f}% | "
                          f"**Max**: {c['max_grad_pct']:.1f}%")
             lines.append("<!-- BEGIN GPX-PACING -->")
-            lines.append(f"- **Speed @ FTP (171W)**: {p['speed_kmh_FTP_171']} km/h "
-                         f"(~{p['time_min_FTP_171']} min)")
-            lines.append(f"- **Speed @ MAP (210W)**: {p['speed_kmh_MAP_210']} km/h "
-                         f"(~{p['time_min_MAP_210']} min)")
-            lines.append(f"- **Speed @ Z3 (130W)**: {p['speed_kmh_Z3_130']} km/h "
-                         f"(~{p['time_min_Z3_130']} min)")
-            lines.append(f"- **VAM at FTP**: {p['vam_at_ftp_mh']:.0f} m/h")
-            if 'power_for_60rpm_at_max_grad_w' in p:
-                lines.append(f"- **Survival (60rpm in 30×32 at max grade)**: "
-                             f"{p['power_for_60rpm_at_max_grad_w']} W")
-            lines.append(f"- **Pacing**: {p['recommended_intent']}")
+            if has_power_meter:
+                lines.append(f"- **Speed @ FTP (171W)**: {p['speed_kmh_FTP_171']} km/h "
+                             f"(~{p['time_min_FTP_171']} min)")
+                lines.append(f"- **Speed @ MAP (210W)**: {p['speed_kmh_MAP_210']} km/h "
+                             f"(~{p['time_min_MAP_210']} min)")
+                lines.append(f"- **Speed @ Z3 (130W)**: {p['speed_kmh_Z3_130']} km/h "
+                             f"(~{p['time_min_Z3_130']} min)")
+                lines.append(f"- **VAM at FTP**: {p['vam_at_ftp_mh']:.0f} m/h")
+                if 'power_for_60rpm_at_max_grad_w' in p:
+                    lines.append(f"- **Survival (60rpm in 30×32 at max grade)**: "
+                                 f"{p['power_for_60rpm_at_max_grad_w']} W")
+                lines.append(f"- **Pacing**: {p['recommended_intent']}")
+            else:
+                a = p.get('assisted')
+                if a is not None:
+                    note = f" — {a['hr_note']}" if a['hr_note'] else ""
+                    lines.append(f"- **HR target**: {a['hr_target']}{note}")
+                    lines.append(f"- **Assist level**: {a['assist_level']} "
+                                 f"(rider ~{a['rider_w']:.0f} W + motor ~{a['motor_w']:.0f} W)")
+                    lines.append(f"- **Speed**: {a['speed_kmh']} km/h "
+                                 f"(~{a['time_min']} min)")
+                    lines.append(f"- **Battery drain**: ~{a['wh_used']:.1f} Wh on the climb "
+                                 f"({a['motor_w']:.0f} W ≈ {a['motor_w']:.0f} Wh/h)")
             lines.append("<!-- END GPX-PACING -->")
             lines.append("")
 
@@ -432,7 +570,13 @@ def main():
     parser.add_argument('--dem-root',
                         default=str(Path.home() / 'cycling-coach-dem'),
                         help='Path to local DEM tile root.')
+
+    from bike_cli import add_bike_args, resolve_bike
+    add_bike_args(parser)
+
     args = parser.parse_args()
+
+    bike, surface, assist_level = resolve_bike(args)
 
     include = _parse_idx_list(args.include)
     exclude = _parse_idx_list(args.exclude)
@@ -453,7 +597,9 @@ def main():
             print(format_waypoint_table(items))
             continue
 
-        result = analyse(f, include_coords=args.json)
+        result = analyse(f, bike=bike, surface=surface,
+                          assist_level=assist_level,
+                          include_coords=args.json)
         if args.json:
             print(json.dumps(result, indent=2, default=str))
         else:
