@@ -239,6 +239,27 @@ The rider develops on osx-arm64 (Mac) and may also run scripts on linux-64. Any 
 
 Do **not** check in `conda env export` output as the canonical environment file — it pins arch-specific build strings that break cross-platform reproducibility. Files like `environment_export.yml` are diagnostic snapshots only and should be gitignored.
 
+### Troubleshooting: conda / Python errors when running scripts
+
+If you encounter any of:
+
+- `ModuleNotFoundError` for a package that should be in the env (`rasterio`, `pyproj`, `py7zr`, `pyshp`, `requests`, `numpy`, `scipy`, `matplotlib`, `fitparse`, `adjustText`)
+- `/opt/miniconda3/envs/cycling/bin/python: No such file or directory` (conda env missing)
+- `command not found: conda` (Miniconda missing)
+- Any indication that the conda env is stale or doesn't match `environment.yml`
+
+**Don't try to pip-install individual packages or manually fix the env.** The framework ships an idempotent installer:
+
+```bash
+bash scripts/setup-container-conda.sh
+```
+
+It installs Miniconda if missing, creates the `cycling` env from `environment.yml` if missing, or runs `conda env update` if the env exists but the spec has new deps. Safe to run any time — it's a no-op when the env already matches the spec. Inside a container the script defaults to `/opt/miniconda3/` and a workspace at `/home/node/.openclaw/workspace/cycling/cycling-coach/`; override the workspace path with the `CYCLING_WORKSPACE` env var if your layout differs.
+
+After running the script, retry the original command using `/opt/miniconda3/envs/cycling/bin/python` (or activate the env first).
+
+If the script itself fails, the most likely causes are: no network for the Miniconda download, an architecture mismatch (only x86_64 + aarch64 supported), or `environment.yml` not at the workspace root. Report the exact error rather than working around.
+
 ---
 
 ## Things to never do
