@@ -704,6 +704,7 @@ def main():
                             if not aborted:
                                 report = verify_route(
                                     f, dem, fallback=fallback,
+                                    bike=bike, surface=surface,
                                 )
                                 embed_in_prediction(out_path, report)
                                 print(

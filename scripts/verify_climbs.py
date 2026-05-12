@@ -210,9 +210,17 @@ def classify_verdict(deltas: list[float], missed: int) -> str:
 _Z3_POWER_W = 130
 
 
-def _compute_pacing(dists, elevs, peak_pct: float) -> dict:
-    """Per-climb pacing on verified inputs. Returns {} on degenerate data."""
+def _compute_pacing(dists, elevs, peak_pct: float, *, bike=None, surface=None) -> dict:
+    """Per-climb pacing on verified inputs. Returns {} on degenerate data.
+
+    Requires both `bike` and `surface` to produce pacing numbers.  When either
+    is None (old callers that haven't been migrated yet) the function returns {}
+    rather than raising a TypeError — same behaviour as the "length_m <= 0"
+    guard below.
+    """
     if not dists or not elevs or len(dists) < 2:
+        return {}
+    if bike is None or surface is None:
         return {}
     from physics_model import (
         predict_speed, vam_at_power, power_for_60rpm_in_lowest_gear,
@@ -225,9 +233,10 @@ def _compute_pacing(dists, elevs, peak_pct: float) -> dict:
         return {}
     avg_pct = 100.0 * gain_m / length_m
 
-    v_ftp = predict_speed(FTP, avg_pct)
-    v_map = predict_speed(MAP_WORKING, avg_pct)
-    v_z3 = predict_speed(_Z3_POWER_W, avg_pct)
+    sw = bike.system_weight_kg_default
+    v_ftp = predict_speed(FTP, avg_pct, bike=bike, surface=surface, system_weight_kg=sw)
+    v_map = predict_speed(MAP_WORKING, avg_pct, bike=bike, surface=surface, system_weight_kg=sw)
+    v_z3 = predict_speed(_Z3_POWER_W, avg_pct, bike=bike, surface=surface, system_weight_kg=sw)
     return {
         "length_m": length_m,
         "gain_m": gain_m,
@@ -238,8 +247,9 @@ def _compute_pacing(dists, elevs, peak_pct: float) -> dict:
         "speed_z3_kmh": v_z3,
         "duration_ftp_min": ((length_m / 1000.0) / v_ftp * 60.0) if v_ftp > 0 else 0.0,
         "duration_map_min": ((length_m / 1000.0) / v_map * 60.0) if v_map > 0 else 0.0,
-        "vam_ftp": vam_at_power(FTP, avg_pct),
-        "survival_w": power_for_60rpm_in_lowest_gear(peak_pct),
+        "vam_ftp": vam_at_power(FTP, avg_pct, bike=bike, surface=surface, system_weight_kg=sw),
+        "survival_w": power_for_60rpm_in_lowest_gear(
+            peak_pct, bike=bike, surface=surface, system_weight_kg=sw),
     }
 
 
@@ -252,6 +262,9 @@ def _verify_one_climb(
     fallback=None,
     stride_m: float = 5.0,
     map_match: bool = True,
+    *,
+    bike=None,
+    surface=None,
 ) -> ClimbVerification:
     """Resample a single climb against the DEM and produce a ClimbVerification.
 
@@ -364,7 +377,8 @@ def _verify_one_climb(
 
     # Pacing recompute on verified gradients (mirrors analyse_gpx's per-climb
     # pacing block; uses verified avg + verified peak as physics inputs).
-    verified_pacing = _compute_pacing(dists, elevs_f, verified_peak)
+    verified_pacing = _compute_pacing(dists, elevs_f, verified_peak,
+                                      bike=bike, surface=surface)
 
     return ClimbVerification(
         name=f"km {climb['start_km']:.2f}",
@@ -397,6 +411,9 @@ def detect_missed_climbs(
     min_grade_pct: float = 1.5,
     min_gain_m: float = 20.0,
     fallback=None,
+    *,
+    bike=None,
+    surface=None,
 ) -> list[ClimbVerification]:
     """Walk the entire route and flag rising segments not in `known_climbs`.
 
@@ -522,13 +539,13 @@ def detect_missed_climbs(
         }
         cv = _verify_one_climb(
             climb_dict, route_lats, route_lons, route_dists,
-            dem, fallback=fallback,
+            dem, fallback=fallback, bike=bike, surface=surface,
         )
         verified_missed.append(cv)
     return verified_missed
 
 
-def verify_route(gpx_path: Path, dem, fallback=None) -> FidelityReport:
+def verify_route(gpx_path: Path, dem, fallback=None, *, bike=None, surface=None) -> FidelityReport:
     """Top-level orchestrator: parse GPX, verify each climb, sweep for missed."""
     from analyse_gpx import parse_gpx, find_climbs
 
@@ -553,12 +570,14 @@ def verify_route(gpx_path: Path, dem, fallback=None) -> FidelityReport:
     verifications: list[ClimbVerification] = []
     fallback_count = 0
     for c in climbs:
-        v = _verify_one_climb(c, lats, lons, dists, dem, fallback=fallback)
+        v = _verify_one_climb(c, lats, lons, dists, dem, fallback=fallback,
+                              bike=bike, surface=surface)
         if v.fallback_used:
             fallback_count += 1
         verifications.append(v)
 
-    missed = detect_missed_climbs(lats, lons, dists, climbs, dem, fallback=fallback)
+    missed = detect_missed_climbs(lats, lons, dists, climbs, dem, fallback=fallback,
+                                  bike=bike, surface=surface)
 
     deltas = [v.delta_pp for v in verifications]
     verdict = classify_verdict(deltas, missed=len(missed))
