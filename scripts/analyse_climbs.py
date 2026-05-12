@@ -242,7 +242,7 @@ def plot_climb_detail(arrays, climb, idx, out_path):
     return True
 
 
-def plot_overview(arrays, climbs, out_path, ride_name=''):
+def plot_overview(arrays, climbs, out_path, ride_name='', bike_name=''):
     """Whole-ride elevation profile with climbs shaded by category."""
     d = arrays['distance_m'] / 1000
     a = arrays['altitude_m']
@@ -308,7 +308,10 @@ def plot_overview(arrays, climbs, out_path, ride_name=''):
     ax.set_ylim(base, a_s.max() + 30)
     ax.set_xlabel('Distance (km)')
     ax.set_ylabel('Elevation (m)')
-    title = 'Ride profile' + (f' — {ride_name}' if ride_name else '')
+    if bike_name:
+        title = f"{bike_name} — {ride_name}" if ride_name else bike_name
+    else:
+        title = 'Ride profile' + (f' — {ride_name}' if ride_name else '')
     ax.set_title(title, fontsize=13, fontweight='bold', loc='left')
     ax.grid(True, alpha=0.3)
     ax.spines['top'].set_visible(False)
@@ -320,12 +323,15 @@ def plot_overview(arrays, climbs, out_path, ride_name=''):
     return True
 
 
-def write_markdown(climbs, arrays, fit_path, chart_paths, out_path):
+def write_markdown(climbs, arrays, fit_path, chart_paths, out_path, bike=None, surface=''):
     """Produce the climb-categorisation markdown."""
     lines = []
     stem = Path(fit_path).stem
     lines.append(f"# Climbs — {stem}\n")
     lines.append(f"Source: `{fit_path}`\n")
+    if bike is not None:
+        lines.append(f"**Bike:** {bike.name} (`{bike.slug}`)  \n")
+        lines.append(f"**Surface:** {surface}  \n\n")
 
     if not climbs:
         lines.append("No categorised climbs detected.\n")
@@ -390,12 +396,16 @@ def write_markdown(climbs, arrays, fit_path, chart_paths, out_path):
 
 
 def main():
+    from bike_cli import add_bike_args, resolve_bike
     parser = argparse.ArgumentParser(
         description='Categorise climbs and generate TdF-style profile charts.')
     parser.add_argument('files', nargs='+', help='FIT file path(s)')
     parser.add_argument('--out-dir', default=None,
                         help='Base dir (default: rides/ relative to repo root)')
+    add_bike_args(parser)
     args = parser.parse_args()
+
+    bike, surface, assist_level = resolve_bike(args)  # noqa: F841 — assist_level unused here
 
     repo_root = Path(__file__).parent.parent
     base = Path(args.out_dir) if args.out_dir else repo_root / 'rides'
@@ -430,7 +440,7 @@ def main():
 
         # Overview
         overview_path = charts_dir / f'{stem}-overview.png'
-        plot_overview(arrays, cat_climbs, overview_path, ride_name=stem)
+        plot_overview(arrays, cat_climbs, overview_path, ride_name=stem, bike_name=bike.name)
         print(f'  Wrote {overview_path}')
         chart_paths = [overview_path]
 
@@ -445,7 +455,8 @@ def main():
 
         # Markdown
         md_path = analyses_dir / f'{stem}-climbs.md'
-        write_markdown(cat_climbs, arrays, str(path), chart_paths, md_path)
+        write_markdown(cat_climbs, arrays, str(path), chart_paths, md_path,
+                       bike=bike, surface=surface)
         print(f'  Wrote {md_path}')
 
         total_pts = sum(categorise(c['length_m']/1000, c['avg_grad_pct'])[1]
