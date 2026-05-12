@@ -232,6 +232,25 @@ A new pressure block in `USER_PROFILE.md` for the Brompton holds indicative star
 
 Silca's empirical validation envelope is ~40 mm; the 54-406 G-One sits outside it. The script flags this in its output rather than implying precision we don't have.
 
+### New-bike onboarding checklist
+
+When adding a bike to the `bikes:` dict, the indicative pressure block in `USER_PROFILE.md` must be backed by a fresh Silca lookup against the bike's actual tyre / weight / surface combination — not extrapolated from another bike's table.
+
+Canonical lookup is **manual** at `https://silca.cc/pages/sppc-form`. Required inputs:
+
+- **Tyre size** (ETRTO width × diameter, e.g. 54-406 for Brompton)
+- **Measured tyre width** if it differs from the labelled size
+- **System weight** (rider + bike + kit + battery if applicable; per-bike `system_weight_kg_default`)
+- **F/R weight distribution** (must be measured first; placeholder Silca default if unmeasured, with a "pressures not validated" flag in output)
+- **Tube type** (TPU / latex / butyl / tubeless) — affects break-point above which CRR climbs
+- **Surface** — run the calculator once per surface in `surfaces_supported` (Brompton: once for tarmac, once for gravel)
+
+The values populate the bike's pressure block in `USER_PROFILE.md`; the script reads them per `--surface`. The lookup is repeated whenever any input changes materially (new tyres, sustained ±2 kg weight shift, new measured F/R split).
+
+For the Brompton G Line, the first lookup is **blocked on the pending F/R split measurement**. Until that lands, the pressure block holds indicative ranges flagged "not yet Silca-validated for this bike".
+
+Agent-driven scrape of the Silca form is *not* implemented — the form is JS-driven and a one-off lookup per bike doesn't justify a fragile automation layer. Manual stays canonical.
+
 ### Battery calibration loop
 
 When ingesting a Brompton FIT, the agent prompts for **battery percentage at start and finish** and the **rider's assist-level pattern for the ride** (e.g. "L1 default, L2 on the three flagged climbs"). These get recorded in the ride analysis markdown header alongside the bike slug, and a one-line summary lands in the Ride log entry. After ~5–10 rides covering all levels, the empirical Wh-per-km at each level replaces the placeholder `level_share` multipliers via a simple least-squares fit. The first calibration data point is logged from tomorrow's gravel route.
