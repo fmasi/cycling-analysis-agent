@@ -52,3 +52,17 @@ def test_surface_validation_unsupported():
         assert "tarmac" in str(e)
     else:
         raise AssertionError("expected UnsupportedSurfaceError")
+
+
+def test_surface_validation_rejects_suffix_variants():
+    """A surface like 'tarmac_garbage' must NOT pass validation just because 'tarmac' is supported.
+
+    The check is exact-match against crr_by_surface, not a startswith fuzzy match.
+    """
+    bike = load_bike(slug="tripster")
+    try:
+        bike.validate_surface("tarmac_garbage")
+    except UnsupportedSurfaceError:
+        pass
+    else:
+        raise AssertionError("expected UnsupportedSurfaceError for unknown surface variant")

@@ -4,7 +4,7 @@ Reads the bikes: dict from USER_PROFILE.md (via profile.load_profile) and
 returns a typed config object. Single source of truth for per-bike physics.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from profile import load_profile
@@ -57,13 +57,9 @@ class BikeConfig:
     def validate_surface(self, surface: str) -> None:
         if surface in self.crr_by_surface:
             return
-        # Allow surface match to surfaces_supported categories
-        if any(surface.startswith(s) for s in self.surfaces_supported):
-            return
         raise UnsupportedSurfaceError(
             f"Surface '{surface}' not supported by bike '{self.slug}'. "
-            f"Supported surfaces: {self.surfaces_supported}. "
-            f"CRR keys: {list(self.crr_by_surface)}"
+            f"Supported surfaces: {list(self.crr_by_surface)}"
         )
 
 
