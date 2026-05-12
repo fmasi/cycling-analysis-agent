@@ -236,20 +236,20 @@ Silca's empirical validation envelope is ~40 mm; the 54-406 G-One sits outside i
 
 When adding a bike to the `bikes:` dict, the indicative pressure block in `USER_PROFILE.md` must be backed by a fresh Silca lookup against the bike's actual tyre / weight / surface combination — not extrapolated from another bike's table.
 
-Canonical lookup is **manual** at `https://silca.cc/pages/sppc-form`. Required inputs:
+Canonical lookup is **agent-driven via a Chrome browser** at `https://silca.cc/pages/sppc-form`. A research agent prompt template lives at `docs/prompts/silca-pressure-lookup.md` and drives the form, reads the recommended front + rear psi back, and returns a structured result the script can consume directly. Required inputs (collected once per bike, once per surface):
 
 - **Tyre size** (ETRTO width × diameter, e.g. 54-406 for Brompton)
 - **Measured tyre width** if it differs from the labelled size
 - **System weight** (rider + bike + kit + battery if applicable; per-bike `system_weight_kg_default`)
 - **F/R weight distribution** (must be measured first; placeholder Silca default if unmeasured, with a "pressures not validated" flag in output)
 - **Tube type** (TPU / latex / butyl / tubeless) — affects break-point above which CRR climbs
-- **Surface** — run the calculator once per surface in `surfaces_supported` (Brompton: once for tarmac, once for gravel)
+- **Surface** — run the lookup once per surface in `surfaces_supported` (Brompton: once for tarmac, once for gravel)
 
-The values populate the bike's pressure block in `USER_PROFILE.md`; the script reads them per `--surface`. The lookup is repeated whenever any input changes materially (new tyres, sustained ±2 kg weight shift, new measured F/R split).
+The agent reports each run as a structured block (inputs echoed + outputs front_psi/rear_psi + a screenshot URL of the calculator result for the audit trail). Values populate the bike's pressure block in `USER_PROFILE.md`; the script reads them per `--surface`. The lookup is repeated whenever any input changes materially (new tyres, sustained ±2 kg weight shift, new measured F/R split).
+
+**Manual fallback** at `https://silca.cc/pages/sppc-form` is the alternative when Chrome tooling isn't available to the agent (e.g. on a headless CI environment without Playwright). The required inputs and outputs are the same.
 
 For the Brompton G Line, the first lookup is **blocked on the pending F/R split measurement**. Until that lands, the pressure block holds indicative ranges flagged "not yet Silca-validated for this bike".
-
-Agent-driven scrape of the Silca form is *not* implemented — the form is JS-driven and a one-off lookup per bike doesn't justify a fragile automation layer. Manual stays canonical.
 
 ### Battery calibration loop
 
