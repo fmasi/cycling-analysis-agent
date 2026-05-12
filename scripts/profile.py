@@ -100,14 +100,23 @@ _FRONTMATTER_RE = re.compile(
 
 
 def _coerce_scalar(raw: str) -> Any:
-    """Best-effort coercion for a YAML scalar without a yaml dependency."""
+    """Best-effort coercion for a YAML scalar without a yaml dependency.
+
+    Handles: inline lists [a, b, c], quoted strings, booleans, ints, floats,
+    inline comments, and placeholder sentinels like <e.g. 200>.
+    """
     s = raw.strip()
     if s == "" or s.startswith("<"):
         # Placeholder like `<e.g. 200>` — treat as missing
         return None
-    # Strip optional inline comment
+    # Inline list [a, b, c]
+    if s.startswith("[") and s.endswith("]"):
+        inner = s[1:-1].strip()
+        if not inner:
+            return []
+        return [_coerce_scalar(x.strip()) for x in inner.split(",")]
+    # Strip optional inline comment (only outside quotes)
     if "#" in s:
-        # Don't strip if inside quotes
         if not (s.startswith('"') or s.startswith("'")):
             s = s.split("#", 1)[0].strip()
     # Strip quotes
@@ -115,6 +124,9 @@ def _coerce_scalar(raw: str) -> Any:
         s.startswith("'") and s.endswith("'")
     ):
         s = s[1:-1]
+    # Boolean
+    if s.lower() in ("true", "false"):
+        return s.lower() == "true"
     # Try int, then float, else string
     try:
         return int(s)
@@ -128,48 +140,74 @@ def _coerce_scalar(raw: str) -> Any:
 
 
 def _parse_simple_yaml(text: str) -> dict[str, Any]:
-    """Parse a 2-level indented YAML doc (block → key: value).
+    """Parse an arbitrarily-nested indented YAML doc from frontmatter.
 
-    We intentionally don't depend on PyYAML — the frontmatter shape is fixed
-    and shallow, and avoiding the dep keeps the loader trivial to ship.
+    We intentionally don't depend on PyYAML — the frontmatter shape is
+    well-defined and avoiding the dep keeps the loader trivial to ship.
 
-    Recognises:
-        section:
-          key: value
-          key: value
+    Supports:
+        - Scalars: str, int, float, bool
+        - Inline lists: [a, b, c]
+        - Nested dicts via indentation (arbitrary depth)
+        - Inline comments stripped with '#'
+        - Quoted strings (single or double)
 
-    Lines that don't fit this pattern (free text outside the frontmatter
-    block, '#' comments, blank lines) are skipped.
+    Does NOT support:
+        - Multi-line strings
+        - Anchors / aliases
+        - Flow-style dicts
+        - Block-style lists with '-' bullets
     """
-    out: dict[str, dict[str, Any]] = {}
-    current_section: str | None = None
+    root: dict[str, Any] = {}
+    # stack entries are (indent_level, dict_node)
+    # indent -1 is a sentinel for the root level
+    stack: list[tuple[int, dict]] = [(-1, root)]
+
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        # Top-level: "section:"
-        if not line.startswith(" ") and line.endswith(":"):
-            current_section = line[:-1].strip()
-            out.setdefault(current_section, {})
+        indent = len(line) - len(line.lstrip())
+        # Pop scopes that are at the same or deeper indent than current line
+        while len(stack) > 1 and stack[-1][0] >= indent:
+            stack.pop()
+        parent = stack[-1][1]
+        key, sep, val = line.lstrip().partition(":")
+        if not sep:
             continue
-        # Indented key: value
-        if line.startswith(" ") and ":" in line and current_section:
-            key, _, val = line.strip().partition(":")
+        key = key.strip()
+        val = val.strip()
+        if val == "":
+            # New nested dict scope
+            new_dict: dict[str, Any] = {}
+            parent[key] = new_dict
+            stack.append((indent, new_dict))
+        else:
             coerced = _coerce_scalar(val)
             if coerced is not None:
-                out[current_section][key.strip()] = coerced
-    return out
+                parent[key] = coerced
+    return root
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Shallow-section, shallow-key merge — override wins per key."""
-    merged: dict[str, Any] = {k: dict(v) for k, v in base.items()}
+    """Merge override into base; override wins per key.
+
+    For top-level keys whose values are dicts in both base and override,
+    a shallow per-key merge is performed (override wins). For any other
+    value type (scalars, nested dicts that aren't in base, lists) the
+    override value replaces the base value wholesale.
+    """
+    merged: dict[str, Any] = {}
+    for k, v in base.items():
+        merged[k] = dict(v) if isinstance(v, dict) else v
     for section, kv in override.items():
-        if not isinstance(kv, dict):
-            continue
-        merged.setdefault(section, {})
-        for key, val in kv.items():
-            merged[section][key] = val
+        if isinstance(kv, dict) and isinstance(merged.get(section), dict):
+            # Shallow merge into an existing defaults section
+            for key, val in kv.items():
+                merged[section][key] = val
+        else:
+            # Scalar, list, or new nested dict — store as-is
+            merged[section] = kv
     return merged
 
 
