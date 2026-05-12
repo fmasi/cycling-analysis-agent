@@ -18,6 +18,30 @@ If `USER_PROFILE.md` does not exist, copy `USER_PROFILE.example.md` to `USER_PRO
 
 ---
 
+## Bike selection
+
+Every FIT analysis and GPX prediction is bike-specific. Determine the bike before running scripts.
+
+**Primary signal (high confidence):**
+- FIT contains power records → **Tripster** (`--bike tripster`)
+- FIT has no power records → **Brompton G Line** (`--bike brompton_g`)
+
+**Secondary signals:**
+- Rider mentions the bike in the current message ("on the Brompton", "Tripster ride")
+- GPX filename or waypoints contain "commute" → Brompton
+- Recent ride log entry on the same day already names the bike
+
+**Rare exception:** Tripster ride with dead power-meter battery looks Brompton-like. Disambiguate via distance, avg speed, or asking.
+
+**Ambiguous → ask the rider** with a concrete recommendation based on weak signals ("looks like the Tripster based on distance — confirm?") rather than an open question.
+
+Every saved analysis markdown records the bike slug in its header. The Ride log in `USER_PROFILE.md` includes a Bike column.
+
+**Brompton-specific calibration:**
+When ingesting a Brompton FIT, prompt the rider for: **battery % start, battery % end, and assist-level pattern** (e.g. "L1 default, L2 on the three flagged climbs"). Record in the analysis markdown header.
+
+---
+
 ## Core principles
 
 1. **Direct, precise, show your working.** The rider should see the reasoning, not just conclusions. Verbose by default. Include caveats and uncertainty ranges.
@@ -33,20 +57,23 @@ If `USER_PROFILE.md` does not exist, copy `USER_PROFILE.example.md` to `USER_PRO
 
 When the rider provides a FIT file:
 1. Read `USER_PROFILE.md` for current profile and prior context
-2. Run `python scripts/analyse_fit.py <file>` for the canonical parse
-3. Save analysis to `rides/analyses/<YYYY-MM-DD>-<short-name>.md`
-4. **For long rides with climbs**: also run `python scripts/analyse_climbs.py <file>` to produce UCI-style climb categorisation, day KOM total, and TdF-style profile charts. Outputs go to `rides/analyses/<stem>-climbs.md` and `rides/charts/<stem>-*.png`. Skip cleanly if no climb has index ≥ 2. Reference the charts in the canonical ride analysis.
-5. Add an entry to the **Ride log** section in `USER_PROFILE.md` (include KOM total when present)
-6. Update **Current fatigue context** in `USER_PROFILE.md` if the rider provided fresh CTL/ATL/TSB
-7. Commit framework / scripts changes if any. **Do not** `git add USER_PROFILE.md` — it is gitignored.
+2. **Determine bike** per the Bike selection rules above (auto-detect via `analyse_fit.py` if not obvious).
+3. Run `python scripts/analyse_fit.py --bike <slug> <file>` for the canonical parse
+4. Save analysis to `rides/analyses/<YYYY-MM-DD>-<short-name>.md`
+5. **For long rides with climbs**: also run `python scripts/analyse_climbs.py --bike <slug> <file>` to produce UCI-style climb categorisation, day KOM total, and TdF-style profile charts. Outputs go to `rides/analyses/<stem>-climbs.md` and `rides/charts/<stem>-*.png`. Skip cleanly if no climb has index ≥ 2. Reference the charts in the canonical ride analysis.
+6. Add an entry to the **Ride log** section in `USER_PROFILE.md` (include KOM total when present)
+7. Update **Current fatigue context** in `USER_PROFILE.md` if the rider provided fresh CTL/ATL/TSB
+8. Commit framework / scripts changes if any. **Do not** `git add USER_PROFILE.md` — it is gitignored.
 
 When the rider provides a GPX file:
-1. Run `python scripts/analyse_gpx.py --save <file>` for climbs and predictions
-2. Markdown auto-saves to `routes/<name>-prediction.md`
-3. **Overview chart auto-generates** to `rides/charts/<name>-overview.png` (3-row layout: waypoint lane / profile / Strava-style grade strip; uses `adjustText` for label-collision avoidance and the `chart_overview` module). Pass `--no-chart` to skip. When hi-fi data is available, wall markers (▲ peak%) are placed on the elevation curve.
-4. Custom GPX waypoints (food stops, water, pub, POI) are auto-classified, deduped, and placed in the waypoint lane.
-5. Use the `cycling` conda env: `/opt/miniconda3/envs/cycling/bin/python`. Has matplotlib, numpy, fitparse, scipy, adjustText, rasterio, pyproj, requests, py7zr, pyshp.
-6. No `USER_PROFILE.md` update needed unless the route changes a planned event.
+1. **Determine bike** per the Bike selection rules above.
+2. If the bike supports multiple surfaces (e.g. Brompton G Line), determine the surface mix and pick the dominant key from `crr_by_surface`.
+3. Run `python scripts/analyse_gpx.py --bike <slug> --surface <name> --save <file>` for climbs and predictions
+4. Markdown auto-saves to `routes/<name>-prediction.md`
+5. **Overview chart auto-generates** to `rides/charts/<name>-overview.png` (3-row layout: waypoint lane / profile / Strava-style grade strip; uses `adjustText` for label-collision avoidance and the `chart_overview` module). Pass `--no-chart` to skip. When hi-fi data is available, wall markers (▲ peak%) are placed on the elevation curve.
+6. Custom GPX waypoints (food stops, water, pub, POI) are auto-classified, deduped, and placed in the waypoint lane.
+7. Use the `cycling` conda env: `/opt/miniconda3/envs/cycling/bin/python`. Has matplotlib, numpy, fitparse, scipy, adjustText, rasterio, pyproj, requests, py7zr, pyshp.
+8. No `USER_PROFILE.md` update needed unless the route changes a planned event.
 
 When the rider provides a GPX file and the verifier is enabled (default):
 1. After `analyse_gpx.py` runs, `verify_climbs` map-matches the GPX climb coords via OSRM, then re-samples each climb against `~/cycling-coach-dem/`
@@ -89,7 +116,7 @@ When the rider reports a test result (4DP, Half Monty, max HR):
 
 When the rider updates body weight, position, or equipment:
 1. Update the relevant section in `USER_PROFILE.md`
-2. If system weight changes, recompute tyre pressure targets via `scripts/tyre_pressure.py`
+2. If system weight changes, recompute tyre pressure targets via `scripts/tyre_pressure.py --bike <slug>`
 
 When the rider and coach agree changes to the current week's plan (swap days, add/move sessions, adjust targets):
 1. Update the **Current week plan** section in `USER_PROFILE.md` in the same turn — table + decisions log + last-updated date
