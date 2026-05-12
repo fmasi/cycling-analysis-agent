@@ -40,6 +40,34 @@ from physics_model import (
 from profile import MAX_HR_BPM, REST_HR_BPM
 
 
+# Moving-time threshold: speed below this counts as "stopped". 1 km/h chosen
+# to catch genuine stops without flagging slow Brompton climbing or queueing
+# traffic. Window of 5 s smooths out single-sample GPS speed glitches.
+MOVING_SPEED_KMH = 1.0
+MOVING_WIN_S = 5
+
+
+# Ascent-from-records smoothing window (seconds, at 1 Hz).
+#
+# Used only when session.total_ascent is missing (Apple Watch case) — Wahoo
+# FITs prefer the head unit's own session value. Calibrated 12 May 2026 against
+# a single dual-device ride (Apple Watch + Wahoo ROAM on the same Cély test
+# loop):
+#
+#   win=15s (old default)  → AW 193m, WR 187m  (vs Wahoo session 158, DEM 146)
+#   win=45s (current)      → AW 159m, WR 156m  ← matches Wahoo session ±2m
+#   win=61s                → AW 149m, WR 146m  ← matches DEM but undershoots Wahoo
+#
+# 45 s chosen so the from-records fallback agrees with the Wahoo head unit's
+# own algorithm, which is what the rider sees in TrainingPeaks. Minimum-delta
+# thresholds (e.g. ignore positive diffs < 0.2 m) were tested and rejected —
+# they kill legitimate climbing signal at any window setting (a 5% climb at
+# 5 km/h = ~0.07 m rise per 1 Hz sample, below typical thresholds).
+#
+# Single-ride calibration — re-tune once 3-5 more dual-device rides are on disk.
+ASCENT_MEDIAN_WINDOW_S = 45
+
+
 def parse_fit(path):
     """Extract structured data from a FIT file."""
     fit = fitparse.FitFile(str(path))
@@ -65,21 +93,70 @@ def parse_fit(path):
     return session, records, laps
 
 
+def _first_present(r, *names):
+    """First non-None value among names. NaN if all missing.
+
+    Replaces the `r.get('enhanced_x', r.get('x', 0)) or 0` pattern, which
+    silently zero-fills when a key is present with value None (which fitparse
+    does when the underlying FIT field has no value). Zero-fill corrupts
+    continuous physical quantities (altitude, distance) downstream.
+    """
+    for n in names:
+        v = r.get(n)
+        if v is not None:
+            return v
+    return np.nan
+
+
+def _interp_nan(arr):
+    """Linear-interpolate over NaN samples in-place. Used for altitude /
+    distance so a single missing record doesn't collapse the array to 0."""
+    n = len(arr)
+    if n == 0:
+        return arr
+    mask = np.isnan(arr)
+    if not mask.any():
+        return arr
+    if mask.all():
+        return np.zeros_like(arr)
+    idx = np.arange(n)
+    arr[mask] = np.interp(idx[mask], idx[~mask], arr[~mask])
+    return arr
+
+
 def to_arrays(records):
-    """Convert record list to aligned numpy arrays."""
+    """Convert record list to aligned numpy arrays.
+
+    Continuous physical quantities (altitude, distance) are interpolated over
+    missing samples. Sensor-driven channels (power, HR, cadence, speed) keep
+    0 as the "no sample" sentinel — downstream code filters with `> 0`.
+    """
     if not records:
         return None
     t0 = records[0]['timestamp']
-    out = {
-        'time_s': np.array([(r['timestamp'] - t0).total_seconds() for r in records]),
-        'distance_m': np.array([r.get('distance', 0) or 0 for r in records]),
-        'altitude_m': np.array([r.get('enhanced_altitude', r.get('altitude', 0)) or 0 for r in records]),
-        'speed_kmh': np.array([(r.get('enhanced_speed', r.get('speed', 0)) or 0) * 3.6 for r in records]),
-        'power_w': np.array([r.get('power', 0) or 0 for r in records]),
-        'hr_bpm': np.array([r.get('heart_rate', 0) or 0 for r in records]),
-        'cadence_rpm': np.array([r.get('cadence', 0) or 0 for r in records]),
+
+    time_s = np.array([(r['timestamp'] - t0).total_seconds() for r in records])
+    distance_m = np.array([_first_present(r, 'distance') for r in records], dtype=float)
+    altitude_m = np.array([_first_present(r, 'enhanced_altitude', 'altitude')
+                           for r in records], dtype=float)
+    speed_ms = np.array([_first_present(r, 'enhanced_speed', 'speed')
+                         for r in records], dtype=float)
+    power_w = np.array([_first_present(r, 'power') for r in records], dtype=float)
+    hr_bpm = np.array([_first_present(r, 'heart_rate') for r in records], dtype=float)
+    cadence_rpm = np.array([_first_present(r, 'cadence') for r in records], dtype=float)
+
+    _interp_nan(altitude_m)
+    _interp_nan(distance_m)
+
+    return {
+        'time_s': time_s,
+        'distance_m': distance_m,
+        'altitude_m': altitude_m,
+        'speed_kmh': np.nan_to_num(speed_ms, nan=0.0) * 3.6,
+        'power_w': np.nan_to_num(power_w, nan=0.0),
+        'hr_bpm': np.nan_to_num(hr_bpm, nan=0.0),
+        'cadence_rpm': np.nan_to_num(cadence_rpm, nan=0.0),
     }
-    return out
 
 
 def power_curve(power_arr, durations_s=(1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600)):
@@ -98,25 +175,33 @@ def power_curve(power_arr, durations_s=(1, 5, 15, 30, 60, 120, 300, 600, 1200, 1
 
 
 def hr_zones_distribution(hr_arr, max_hr=MAX_HR_BPM, rest_hr=REST_HR_BPM):
-    """Time in each Karvonen HR zone (seconds)."""
+    """Time in each Karvonen HR zone (seconds), including a sub-Z1 bucket.
+
+    The sub-Z1 bucket (HR > 0 but below Z1 floor) captures very-easy /
+    coasting time. Omitting it made easy-spin rides look like "no HR data"
+    when the rider was simply below the Z1 threshold most of the ride.
+    """
     valid = hr_arr[hr_arr > 0]
     if len(valid) == 0:
         return {}
     # Karvonen: HR_target = (max - rest) * pct + rest
-    bounds = {
-        'Z1 Recovery': (0.50, 0.60),
-        'Z2 Aerobic': (0.60, 0.70),
-        'Z3 Tempo': (0.70, 0.80),
-        'Z4 Threshold': (0.80, 0.90),
-        'Z5 VO2max': (0.90, 1.00),
-    }
+    bounds = [
+        ('<Z1 Coast',    0.00, 0.50),
+        ('Z1 Recovery',  0.50, 0.60),
+        ('Z2 Aerobic',   0.60, 0.70),
+        ('Z3 Tempo',     0.70, 0.80),
+        ('Z4 Threshold', 0.80, 0.90),
+        ('Z5 VO2max',    0.90, 1.00),
+    ]
     hrr = max_hr - rest_hr
     out = {}
-    for name, (lo, hi) in bounds.items():
+    for name, lo, hi in bounds:
         bpm_lo = rest_hr + hrr * lo
         bpm_hi = rest_hr + hrr * hi
         if name == 'Z5 VO2max':
             count = ((valid >= bpm_lo) & (valid <= max_hr + 10)).sum()
+        elif name == '<Z1 Coast':
+            count = ((valid > 0) & (valid < bpm_hi)).sum()
         else:
             count = ((valid >= bpm_lo) & (valid < bpm_hi)).sum()
         out[name] = int(count)
@@ -174,6 +259,13 @@ def compute_max_grade(distance_m, altitude_m, start_m, end_m,
     Uses median-filtered raw elevation (kills GPS spikes) + 50m grade window
     on a 10m grid. 50m ≈ 15 s on the climb at FTP — short enough to capture
     real ramps you'd feel in your legs, long enough to dodge single-point noise.
+
+    NOTE: do NOT use `session.max_pos_grade` from a Wahoo FIT as a substitute.
+    That field is the max of the head unit's per-sample (already smoothed)
+    grade reading — on 12 May 2026 it reported 5.61% on a climb where this
+    function (run over the same records) found 11.3%, agreeing with the hi-fi
+    DEM verifier to 0.2pp. The session field is over-smoothed and unsafe for
+    peak-grade work.
     """
     distance_m = np.asarray(distance_m)
     altitude_m = np.asarray(altitude_m)
@@ -299,8 +391,60 @@ def analyse(path):
         result['note'] = 'Insufficient records to compute curves/zones'
         return result
 
+    # Sensor presence flags — used by format_markdown to suppress "0"-valued
+    # rows for sensors the FIT didn't carry (e.g. Apple Watch: no power, no
+    # cadence, no speed field).
+    result['has_power'] = bool((arrays['power_w'] > 0).any())
+    result['has_cadence'] = bool((arrays['cadence_rpm'] > 0).any())
+    result['has_hr'] = bool((arrays['hr_bpm'] > 0).any())
+    result['hr_samples'] = int((arrays['hr_bpm'] > 0).sum())
+    result['hr_coverage_pct'] = (result['hr_samples'] / len(arrays['time_s']) * 100
+                                  if len(arrays['time_s']) else 0)
+
+    # Derive moving time from distance gradient when the FIT didn't apply
+    # auto-pause (Apple Watch case: total_timer_time == total_elapsed_time,
+    # but Apple Fitness app + Wahoo both auto-pause internally).
+    #
+    # Trigger: session marked no auto-pause AND distance signal has stopped
+    # intervals (>60s worth of v < 1 km/h). Stored as `derived_moving_time_s`;
+    # any hrTSS calculation should use this instead of `total_timer_time` to
+    # avoid overstating TSS by the stopped-time fraction (16% on the
+    # 12 May 2026 Cely test ride).
+    derived_moving_s = 0
+    timer = result['timer_time_s']
+    elapsed = result['elapsed_time_s']
+    no_autopause = elapsed > 0 and abs(elapsed - timer) < 1
+    if len(arrays['time_s']) > MOVING_WIN_S:
+        t = arrays['time_s']
+        d = arrays['distance_m']
+        v_kmh = np.zeros_like(t)
+        for i in range(MOVING_WIN_S, len(t)):
+            dt = t[i] - t[i - MOVING_WIN_S]
+            if dt > 0:
+                v_kmh[i] = (d[i] - d[i - MOVING_WIN_S]) / dt * 3.6
+        derived_moving_s = int((v_kmh > MOVING_SPEED_KMH).sum())
+    if no_autopause and derived_moving_s > 0 and (timer - derived_moving_s) > 60:
+        result['derived_moving_time_s'] = float(derived_moving_s)
+        result['no_autopause_applied'] = True
+    else:
+        result['no_autopause_applied'] = False
+
+    # Derive ascent from altitude records if session didn't store it
+    # (Apple Watch FITs don't carry session.total_ascent). Median filter
+    # over per-sample baro, then sum positive deltas. See
+    # ASCENT_MEDIAN_WINDOW_S for the calibration story.
+    if result['total_ascent_m'] == 0 and len(arrays['altitude_m']) > 30:
+        alt = arrays['altitude_m'].astype(float)
+        alt_sm = median_filter_1d(alt, size=ASCENT_MEDIAN_WINDOW_S)
+        d = np.diff(alt_sm)
+        result['total_ascent_m'] = float(d[d > 0].sum())
+        result['total_descent_m'] = float(-d[d < 0].sum())
+        result['ascent_source'] = f'records ({ASCENT_MEDIAN_WINDOW_S}s median)'
+    else:
+        result['ascent_source'] = 'session'
+
     # Power curve
-    if (arrays['power_w'] > 0).any():
+    if result['has_power']:
         pc = power_curve(arrays['power_w'])
         result['power_curve'] = {f'{k}s': round(v, 1) for k, v in pc.items()}
         result['power_curve_wkg'] = {f'{k}s': round(v / RIDER_WEIGHT_KG, 2) for k, v in pc.items()}
@@ -308,10 +452,10 @@ def analyse(path):
         result['power_curve'] = None
 
     # Zone distributions (counts of seconds at 1Hz)
-    if (arrays['power_w'] > 0).any():
+    if result['has_power']:
         result['power_zones_s'] = power_zones_distribution(
             arrays['power_w'], arrays['cadence_rpm'])
-    if (arrays['hr_bpm'] > 0).any():
+    if result['has_hr']:
         result['hr_zones_s'] = hr_zones_distribution(arrays['hr_bpm'])
 
     # Climbs (only meaningful if there's GPS+altitude variation)
@@ -324,6 +468,178 @@ def analyse(path):
     result['intervals_detected'] = len(interval_laps)
 
     return result
+
+
+def pair_analyse(path_a, path_b):
+    """Analyse two FITs from the same ride and merge field-by-field.
+
+    Pairing validation: same sport, start times within 30 min, distance
+    within 5%.
+
+    Merge rules:
+        - "Terrain source" (distance / timer / ascent / temperature / climbs):
+          the FIT whose `session.total_ascent` is populated (head-unit-stored
+          ascent — typically the Wahoo or Garmin), with `auto-pause > 0` as
+          a fallback signal. If neither file qualifies, falls back to file A.
+        - HR: whichever file has HR samples > 0.
+        - Power: whichever file has power samples > 0.
+
+    Returns (merged_result, sources, warnings).
+    """
+    a = analyse(path_a)
+    b = analyse(path_b)
+
+    warnings = []
+    sa, sb = a.get('sport', ''), b.get('sport', '')
+    if sa and sb and sa != sb:
+        warnings.append(f"Sport mismatch: '{sa}' vs '{sb}'")
+
+    try:
+        ta = datetime.fromisoformat(a['start_time']) if a['start_time'] else None
+        tb = datetime.fromisoformat(b['start_time']) if b['start_time'] else None
+        if ta and tb and abs((ta - tb).total_seconds()) > 1800:
+            warnings.append(
+                f"Start times {abs((ta-tb).total_seconds())/60:.0f} min apart — "
+                "may not be the same ride"
+            )
+    except (ValueError, TypeError):
+        pass
+
+    if a['distance_km'] > 0 and b['distance_km'] > 0:
+        dist_pct = (abs(a['distance_km'] - b['distance_km'])
+                    / max(a['distance_km'], b['distance_km']) * 100)
+        if dist_pct > 5:
+            warnings.append(f"Distance differs by {dist_pct:.1f}% — verify same ride")
+
+    # Pick terrain source: prefer session-stored ascent, then auto-pause.
+    def _terrain_priority(r):
+        score = 0
+        if r['total_ascent_m'] > 0 and r.get('ascent_source') == 'session':
+            score += 2
+        if r['auto_pause_s'] > 30:
+            score += 1
+        return score
+
+    if _terrain_priority(b) > _terrain_priority(a):
+        terrain, other = b, a
+        terrain_label, other_label = 'B', 'A'
+        terrain_path, other_path = path_b, path_a
+    else:
+        terrain, other = a, b
+        terrain_label, other_label = 'A', 'B'
+        terrain_path, other_path = path_a, path_b
+
+    # HR source
+    hr_data, hr_source = None, None
+    if terrain.get('has_hr'):
+        hr_data, hr_source = terrain, terrain_label
+    elif other.get('has_hr'):
+        hr_data, hr_source = other, other_label
+
+    # Power source
+    pwr_data, power_source = None, None
+    if terrain.get('has_power'):
+        pwr_data, power_source = terrain, terrain_label
+    elif other.get('has_power'):
+        pwr_data, power_source = other, other_label
+
+    merged = dict(terrain)
+    merged['file'] = str(terrain_path)
+    merged['paired_with'] = str(other_path)
+
+    if hr_data:
+        for k in ('avg_hr_bpm', 'max_hr_bpm', 'has_hr', 'hr_samples',
+                  'hr_coverage_pct', 'hr_zones_s'):
+            if k in hr_data:
+                merged[k] = hr_data[k]
+
+    if pwr_data:
+        for k in ('tss', 'normalized_power_w', 'intensity_factor', 'avg_power_w',
+                  'max_power_w', 'threshold_power_used_w', 'avg_cadence_rpm',
+                  'power_curve', 'power_curve_wkg', 'power_zones_s',
+                  'has_power', 'has_cadence'):
+            if k in pwr_data:
+                merged[k] = pwr_data[k]
+
+    sources = {
+        'terrain_label': terrain_label,
+        'terrain_path': str(terrain_path),
+        'other_label': other_label,
+        'other_path': str(other_path),
+        'hr_source': hr_source,
+        'power_source': power_source,
+        'a': {'path': str(path_a), 'start_time': a['start_time'],
+              'distance_km': a['distance_km'], 'timer_s': a['timer_time_s'],
+              'elapsed_s': a['elapsed_time_s'], 'ascent_m': a['total_ascent_m'],
+              'ascent_source': a.get('ascent_source'),
+              'has_hr': a.get('has_hr', False), 'has_power': a.get('has_power', False)},
+        'b': {'path': str(path_b), 'start_time': b['start_time'],
+              'distance_km': b['distance_km'], 'timer_s': b['timer_time_s'],
+              'elapsed_s': b['elapsed_time_s'], 'ascent_m': b['total_ascent_m'],
+              'ascent_source': b.get('ascent_source'),
+              'has_hr': b.get('has_hr', False), 'has_power': b.get('has_power', False)},
+    }
+    return merged, sources, warnings
+
+
+def format_markdown_paired(merged, sources, warnings):
+    """Format a paired-FIT analysis with explicit source attribution."""
+    lines = []
+    title = Path(merged['file']).stem
+    lines.append(f"# Ride analysis — {title} (paired)\n")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+
+    lines.append("## Sources\n")
+    lines.append(f"- **{sources['terrain_label']}** "
+                 f"(terrain / distance / timer / climbs): "
+                 f"`{sources['terrain_path']}`")
+    lines.append(f"- **{sources['other_label']}** (additional): "
+                 f"`{sources['other_path']}`")
+    if sources['hr_source']:
+        lines.append(f"- HR from: **{sources['hr_source']}**")
+    else:
+        lines.append("- HR: _not recorded on either device_")
+    if sources['power_source']:
+        lines.append(f"- Power from: **{sources['power_source']}**")
+    else:
+        lines.append("- Power: _not recorded on either device_")
+
+    if warnings:
+        lines.append("\n**Pairing warnings**:")
+        for w in warnings:
+            lines.append(f"- ⚠️ {w}")
+
+    lines.append("\n## Cross-device agreement\n")
+    lines.append("| Metric | A | B | Δ |")
+    lines.append("|---|---|---|---|")
+    a, b = sources['a'], sources['b']
+    if a['distance_km'] and b['distance_km']:
+        d_abs = abs(a['distance_km'] - b['distance_km'])
+        d_pct = d_abs / max(a['distance_km'], b['distance_km']) * 100
+        lines.append(f"| Distance (km) | {a['distance_km']:.2f} | "
+                     f"{b['distance_km']:.2f} | {d_abs:.2f} ({d_pct:.1f}%) |")
+    if a['timer_s'] and b['timer_s']:
+        lines.append(f"| Timer (min) | {a['timer_s']/60:.1f} | "
+                     f"{b['timer_s']/60:.1f} | "
+                     f"{abs(a['timer_s']-b['timer_s'])/60:.1f} |")
+    if a['elapsed_s'] and b['elapsed_s']:
+        lines.append(f"| Elapsed (min) | {a['elapsed_s']/60:.1f} | "
+                     f"{b['elapsed_s']/60:.1f} | "
+                     f"{abs(a['elapsed_s']-b['elapsed_s'])/60:.1f} |")
+    if a['ascent_m'] or b['ascent_m']:
+        a_src = f" _({a.get('ascent_source','session')})_" if a['ascent_m'] else ""
+        b_src = f" _({b.get('ascent_source','session')})_" if b['ascent_m'] else ""
+        lines.append(f"| Ascent (m) | {a['ascent_m']:.0f}{a_src} | "
+                     f"{b['ascent_m']:.0f}{b_src} | "
+                     f"{abs(a['ascent_m']-b['ascent_m']):.0f} |")
+
+    body = format_markdown(merged).split('\n')
+    for i, ln in enumerate(body):
+        if ln.startswith('## Summary'):
+            body = body[i:]
+            break
+    lines.append('\n' + '\n'.join(body))
+    return '\n'.join(lines)
 
 
 def format_markdown(result):
@@ -340,18 +656,40 @@ def format_markdown(result):
     if result['auto_pause_s'] > 30:
         lines.append(f"- **Auto-pause**: {result['auto_pause_s']/60:.1f} min "
                      f"(elapsed: {result['elapsed_time_s']/60:.1f} min)")
-    lines.append(f"- **Ascent**: {result['total_ascent_m']:.0f} m")
+    if result.get('no_autopause_applied'):
+        moving_min = result['derived_moving_time_s'] / 60
+        timer_min = result['timer_time_s'] / 60
+        gap_pct = (timer_min - moving_min) / timer_min * 100
+        lines.append(f"- **Moving time** (derived, v > {MOVING_SPEED_KMH:.0f} km/h): "
+                     f"{moving_min:.1f} min "
+                     f"— device didn't auto-pause; timer overstates duration by "
+                     f"{gap_pct:.0f}%. **Use moving time for hrTSS, not timer.**")
+    ascent_src = result.get('ascent_source', 'session')
+    ascent_label = "" if ascent_src == 'session' else " _(computed from records — session missing)_"
+    lines.append(f"- **Ascent**: {result['total_ascent_m']:.0f} m{ascent_label}")
     lines.append("")
-    lines.append("## Stored TrainingPeaks values (use these, do not recompute)\n")
-    lines.append(f"- **TSS**: {result['tss']:.1f}")
-    lines.append(f"- **NP**: {result['normalized_power_w']:.0f} W")
-    lines.append(f"- **IF**: {result['intensity_factor']:.3f}")
-    lines.append(f"- **FTP used in calc**: {result['threshold_power_used_w']:.0f} W")
-    lines.append(f"- **Avg power**: {result['avg_power_w']:.0f} W | "
-                 f"**Max**: {result['max_power_w']:.0f} W")
-    lines.append(f"- **Avg HR**: {result['avg_hr_bpm']:.0f} bpm | "
-                 f"**Max**: {result['max_hr_bpm']:.0f} bpm")
-    lines.append(f"- **Avg cadence**: {result['avg_cadence_rpm']:.0f} rpm")
+
+    has_power = result.get('has_power', result['avg_power_w'] > 0)
+    has_cadence = result.get('has_cadence', result['avg_cadence_rpm'] > 0)
+
+    if has_power:
+        lines.append("## Stored TrainingPeaks values (use these, do not recompute)\n")
+        lines.append(f"- **TSS**: {result['tss']:.1f}")
+        lines.append(f"- **NP**: {result['normalized_power_w']:.0f} W")
+        lines.append(f"- **IF**: {result['intensity_factor']:.3f}")
+        lines.append(f"- **FTP used in calc**: {result['threshold_power_used_w']:.0f} W")
+        lines.append(f"- **Avg power**: {result['avg_power_w']:.0f} W | "
+                     f"**Max**: {result['max_power_w']:.0f} W")
+    else:
+        lines.append("## Stored TrainingPeaks values\n")
+        lines.append("- **Power**: _not recorded_ (no power meter on this FIT — "
+                     "use hrTSS via HR / duration)")
+
+    if result['avg_hr_bpm'] > 0 or result['max_hr_bpm'] > 0:
+        lines.append(f"- **Avg HR**: {result['avg_hr_bpm']:.0f} bpm | "
+                     f"**Max**: {result['max_hr_bpm']:.0f} bpm")
+    if has_cadence:
+        lines.append(f"- **Avg cadence**: {result['avg_cadence_rpm']:.0f} rpm")
 
     if result.get('power_curve'):
         lines.append("\n## Power curve\n")
@@ -381,7 +719,9 @@ def format_markdown(result):
     if result.get('hr_zones_s'):
         total = sum(result['hr_zones_s'].values())
         if total > 0:
-            lines.append(f"\n## HR zones ({total/60:.0f} min with HR)\n")
+            cov = result.get('hr_coverage_pct', 0)
+            samples = result.get('hr_samples', total)
+            lines.append(f"\n## HR zones ({samples} samples, {cov:.0f}% record coverage)\n")
             for zone, secs in result['hr_zones_s'].items():
                 pct = secs / total * 100
                 lines.append(f"- **{zone}**: {secs/60:.1f} min ({pct:.1f}%)")
@@ -391,12 +731,36 @@ def format_markdown(result):
 
 def main():
     parser = argparse.ArgumentParser(description='Analyse FIT files for cycling.')
-    parser.add_argument('files', nargs='+', help='FIT file path(s)')
+    parser.add_argument('files', nargs='*', help='FIT file path(s) for single-file analysis')
+    parser.add_argument('--pair', nargs=2, metavar=('FIT_A', 'FIT_B'),
+                        help='Merge two FITs from the same ride into one '
+                             'analysis (auto-picks best source per metric)')
     parser.add_argument('--json', action='store_true',
                         help='Output JSON instead of markdown')
     parser.add_argument('--save', action='store_true',
                         help='Save markdown output to rides/analyses/<name>.md')
     args = parser.parse_args()
+
+    if not args.files and not args.pair:
+        parser.error("either positional FIT files or --pair FIT_A FIT_B is required")
+
+    if args.pair:
+        merged, sources, warnings = pair_analyse(args.pair[0], args.pair[1])
+        if args.json:
+            print(json.dumps({'merged': merged, 'sources': sources,
+                              'warnings': warnings}, indent=2, default=str))
+        else:
+            md = format_markdown_paired(merged, sources, warnings)
+            print(md)
+            if args.save:
+                stem = Path(args.pair[0]).stem
+                # Drop a leading date prefix if present, then tag -paired.
+                out_dir = Path(__file__).parent.parent / 'rides' / 'analyses'
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f'{stem}-paired.md'
+                out_path.write_text(md)
+                print(f'\n[Saved to {out_path}]', file=sys.stderr)
+        return
 
     for f in args.files:
         result = analyse(f)
