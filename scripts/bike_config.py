@@ -53,6 +53,10 @@ class BikeConfig:
     crr_by_surface: dict[str, float]
     surfaces_supported: list[str]
     assist: Optional[AssistConfig] = None
+    tyre_pressure_psi: Optional[dict] = None
+    tyre_pressure_uncertainty_psi: Optional[float] = None
+    unvalidated_by_model: bool = False
+    unvalidated_by_model_source: Optional[str] = None
 
     def validate_surface(self, surface: str) -> None:
         if surface in self.crr_by_surface:
@@ -98,6 +102,8 @@ def load_bike(slug: Optional[str] = None, *, profile: Optional[dict] = None) -> 
             default_level_climb_5pct=a["default_level_climb_5pct"],
             default_level_climb_10pct=a["default_level_climb_10pct"],
         )
+    tyre_pressure_psi = raw.get("tyre_pressure_psi") or None
+    tp_uncertainty = raw.get("tyre_pressure_uncertainty_psi")
     return BikeConfig(
         slug=slug,
         name=raw["name"],
@@ -113,4 +119,8 @@ def load_bike(slug: Optional[str] = None, *, profile: Optional[dict] = None) -> 
         crr_by_surface={k: float(v) for k, v in raw["crr_by_surface"].items()},
         surfaces_supported=list(raw["surfaces_supported"]),
         assist=assist,
+        tyre_pressure_psi=tyre_pressure_psi,
+        tyre_pressure_uncertainty_psi=float(tp_uncertainty) if tp_uncertainty is not None else None,
+        unvalidated_by_model=bool(raw.get("unvalidated_by_model", False)),
+        unvalidated_by_model_source=raw.get("unvalidated_by_model_source"),
     )
