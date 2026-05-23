@@ -814,7 +814,7 @@ def main():
                             and getattr(report, 'stitched_dists', None)
                             and not getattr(args, 'gpx_only_chart', False)
                         )
-                        if _use_hifi and getattr(report, 'stitched_dists', None):
+                        if _use_hifi:
                             arrays = {
                                 'distance_m': np.asarray(report.stitched_dists, float),
                                 'altitude_m': np.asarray(report.stitched_elevs, float),
@@ -834,7 +834,9 @@ def main():
                                 print(f'[Saved per-climb chart {out_png}]',
                                       file=sys.stderr)
                 except Exception as e:
+                    import traceback
                     print(f'⚠ per-climb detail skipped: {e}', file=sys.stderr)
+                    traceback.print_exc(file=sys.stderr)
 
 
 if __name__ == '__main__':
