@@ -42,14 +42,15 @@ When ingesting a Brompton FIT, prompt the rider for: **battery % start, battery 
 
 ---
 
-## Core principles
+## 🚨 Plan Hierarchy & Conflict Resolution
 
-1. **Direct, precise, show your working.** The rider should see the reasoning, not just conclusions. Verbose by default. Include caveats and uncertainty ranges.
-2. **State assumptions explicitly** — which CRR, CdA, weight you used.
-3. **Ranges over single numbers** for predictions: "18.6 ± 1 km/h at FTP".
-4. **W/kg uses body weight. Speed/physics uses system weight (body + bike + kit). Never mix.**
-5. **Ask for data rather than guess.** Confirm CTL/ATL/TSB at the start of training planning conversations.
-6. **Update `USER_PROFILE.md` as a side effect of every analysis.** Don't let it go stale. Commit framework changes; do NOT commit USER_PROFILE.md.
+When asked for a training plan, always resolve using this priority (highest to lowest):
+1. **The "Current Week Plan" section in `USER_PROFILE.md`**: This is the **Live Truth**. It contains weather adjustments, life changes, and manual overrides.
+2. **The specific weekly file in `plans/`**: (e.g., `2026-W18...md`). Use this only if the `USER_PROFILE.md` section is empty or outdated.
+3. **The Phase Template in `plans/`**: (e.g., `2026-build-block...md`). This is the **Static Default**. Use this *only* to derive a new plan if no live or weekly files exist.
+
+**Rule:** If `USER_PROFILE.md` contains a "Current Week Plan" section, **ignore** the static templates for that specific week.
+
 
 ---
 
@@ -64,6 +65,7 @@ When the rider provides a FIT file:
 6. Add an entry to the **Ride log** section in `USER_PROFILE.md` (include KOM total when present)
 7. Update **Current fatigue context** in `USER_PROFILE.md` if the rider provided fresh CTL/ATL/TSB
 8. Commit framework / scripts changes if any. **Do not** `git add USER_PROFILE.md` — it is gitignored.
+9. If the `trainingpeaks` MCP is connected, reconcile the FIT's stored TSS/IF against TP via `tp_get_workout` (read the stored value — never recompute). Note: v2.0.0 ships no file-upload tool, so sync the FIT to TrainingPeaks the usual way, not via the MCP.
 
 When the rider provides a GPX file:
 1. **Determine bike** per the Bike selection rules above.
@@ -113,6 +115,7 @@ When the rider reports a test result (4DP, Half Monty, max HR):
 3. Recalculate and update the **Power zones** table in `USER_PROFILE.md`
 4. Reassess primary limiter and rider archetype (note in narrative)
 5. Update the **Data status tracker** in `USER_PROFILE.md`
+6. If the `trainingpeaks` MCP is connected, offer to sync the new threshold to TP via `tp_update_ftp` (recomputes TP's power zones) and `tp_update_hr_zones` — confirm before writing.
 
 When the rider updates body weight, position, or equipment:
 1. Update the relevant section in `USER_PROFILE.md`
@@ -120,7 +123,7 @@ When the rider updates body weight, position, or equipment:
 
 When the rider and coach agree changes to the current week's plan (swap days, add/move sessions, adjust targets):
 1. Update the **Current week plan** section in `USER_PROFILE.md` in the same turn — table + decisions log + last-updated date
-2. Treat TrainingPeaks as the rider-side source of truth; this section is the coach-side mirror so other tools (e.g. OpenClaw / local LLMs reading this folder) and resumed sessions see the live state
+2. Treat TrainingPeaks as the rider-side source of truth; this section is the coach-side mirror so other tools (e.g. OpenClaw / local LLMs reading this folder) and resumed sessions see the live state. When the `trainingpeaks` MCP is connected, also **push** agreed changes to TP itself (`tp_create_workout` / `tp_update_workout` / `tp_copy_workout`) after rider confirmation, so the mirror and TP stay in sync
 3. At the start of each new calendar week, replace the table with the new week's plan and archive notable decisions into the relevant ride analysis or memory if they outlive the week
 
 ---
@@ -217,7 +220,7 @@ Per-climb detail charts are generated for **Cat 3 and harder**; an overview char
   - This is the form you carry *into* today's training, before today's TSS is applied.
   - Matches what TrainingPeaks displays (tooltip: "yesterday's fitness minus yesterday's fatigue").
   - NEVER use same-day CTL − ATL when reporting current TSB; only use it for end-of-day projections, clearly labelled as such.
-- **Source hierarchy for CTL/ATL/TSB**: rider's TrainingPeaks reading (all workouts) > `scripts/training_load.py` (bike only). Strength and other sport hrTSS that TP counts but bike-only projections do not.
+- **Source hierarchy for CTL/ATL/TSB**: live `tp_get_fitness` (TrainingPeaks MCP, all workouts) ≈ the rider's TrainingPeaks reading > `scripts/training_load.py` (bike only, offline fallback). Strength and other sport hrTSS count in TP but not in bike-only projections. When the `trainingpeaks` MCP is connected, fetch via `tp_get_fitness` rather than asking the rider. See the **TrainingPeaks integration** section.
 
 ### Safe ranges
 - TSB −5 to +5: balanced
@@ -232,6 +235,50 @@ Target 3–7 CTL/month. Above 7/month sustained = injury risk.
 Equilibrium weekly TSS ≈ CTL × 7. A rider at CTL 50 has equilibrium ~350 TSS/week.
 
 Use `scripts/training_load.py` to project forward.
+
+---
+
+## TrainingPeaks integration
+
+A TrainingPeaks MCP server (`trainingpeaks`, the `tp-mcp` package, pinned v2.0.0) exposes **52 tools** for reading and writing the rider's TrainingPeaks account. It is available in **both** runtimes that use this repo:
+- **Claude Code (host)** — registered in `.mcp.json`; authenticates from Safari via the macOS Keychain.
+- **OpenClaw / gemma (container)** — registered in `~/.openclaw/openclaw.json` under `mcp.servers`; authenticates from the `TP_AUTH_COOKIE` env var (set in `~/Git/openclaw/.env`).
+
+When the server is connected, **prefer it over asking the rider** for anything it can fetch (fitness, workouts, FTP, events). Treat TP as a live, queryable **and** writable source — not just a number the rider reports.
+
+### When to use which tool
+
+| Need | Tool(s) |
+|---|---|
+| Current fitness (CTL/ATL/TSB) | `tp_get_fitness` — live top of the CTL/ATL/TSB source hierarchy |
+| Weekly TSS so far / vs target | `tp_get_weekly_summary`, `tp_get_atp` (ATP weekly TSS targets, periods, races) |
+| A ride's stored TSS / IF / details | `tp_get_workout`, `tp_analyze_workout` (read the **stored** value — never recompute from FIT) |
+| Power / running PRs | `tp_get_peaks`, `tp_get_workout_prs` |
+| Schedule / build / copy a planned session | `tp_create_workout`, `tp_update_workout`, `tp_copy_workout`, `tp_validate_structure` |
+| Reorder / comment on workouts | `tp_reorder_workouts`, `tp_add_workout_comment`, `tp_get_workout_comments` |
+| FTP / zones after a test | `tp_get_athlete_settings`, `tp_update_ftp`, `tp_update_hr_zones`, `tp_update_speed_zones` |
+| Weight / HRV / sleep | `tp_log_metrics`, `tp_get_metrics` |
+| Race calendar / A-event / weeks-to-race | `tp_get_focus_event`, `tp_get_next_event`, `tp_get_events`, `tp_create_event` |
+| Calendar notes, availability | `tp_create_note`, `tp_create_availability` |
+| Auth check | `tp_auth_status` (read-only; safe) |
+
+*(v2.0.0 has no FIT/TCX/GPX file-upload tool. The 52-tool set also includes equipment, workout-library, nutrition, and workout-type tools not listed above.)*
+
+### How it connects to existing workflows
+- **CTL/ATL/TSB**: `tp_get_fitness` is the live top of the source hierarchy (above `training_load.py`, which stays the offline / bike-only fallback). Keep the TP lag-1 TSB convention. TP fitness already includes all sports — don't double-count with the bike-only projection.
+- **Plan Hierarchy**: `tp_get_atp` supplies the ATP (weekly TSS targets, periods, races) — useful background for deriving a plan, but it does **not** outrank the "Current Week Plan" in `USER_PROFILE.md` (see Plan Hierarchy & Conflict Resolution: `USER_PROFILE.md` is Live Truth).
+- **Current Week Plan**: TP stays the rider-side source of truth; the agent can now both **read** the planned week (`tp_get_workouts`) and **push** agreed changes (`tp_create_workout` / `tp_update_workout` / `tp_copy_workout`) — always after rider confirmation. The `USER_PROFILE.md` "Current Week Plan" section remains the coach-side mirror.
+- **Tests** (4DP / Half Monty): after updating `USER_PROFILE.md`, offer to sync the new threshold to TP via `tp_update_ftp` (recomputes TP power zones) and `tp_update_hr_zones`.
+- **FIT ingest**: reconcile the stored TSS/IF via `tp_get_workout` (v2.0.0 has no file-upload tool — sync the FIT to TP the usual way).
+
+### Write-safety
+Read tools (`tp_get_*`, `tp_analyze_*`, `tp_auth_status`) are free to call. **Every mutating call must be confirmed with the rider first** (see Things to never do). Server-side Pydantic validation does not replace rider confirmation.
+
+### Authentication — troubleshooting
+The TP session cookie expires every few weeks. If a `tp_*` tool fails with an auth / "not authenticated" / expired error:
+- **Host (Claude Code):** re-run `tp-mcp auth --from-browser safari` (be logged into TrainingPeaks in Safari first), or call the `tp_refresh_auth` tool. Verify with `tp-mcp auth-status`.
+- **OpenClaw container (gemma):** the cookie comes from `TP_AUTH_COOKIE` in `~/Git/openclaw/.env`. Grab a fresh `Production_tpAuth` value from `app.trainingpeaks.com` DevTools (Application → Cookies), update that line in `.env`, and restart the gateway: `docker compose -f ~/Git/openclaw/docker-compose.yml up -d`. The credential is **not** persisted in the container (machine-bound salt changes on rebuild) — the env var is the single source.
+- If the `trainingpeaks` server isn't listed/connected, or a call keeps failing: tell the rider the MCP needs attention, then either ask them for the current numbers or fall back to the last-known value (`USER_PROFILE.md` / `training_load.py`) — always **warning that it is not the latest from TrainingPeaks.**
 
 ---
 
@@ -296,8 +343,9 @@ If the script itself fails, the most likely causes are: no network for the Minic
 - **Never** confuse body weight with system weight
 - **Never** assume tyre/tube spec without checking `USER_PROFILE.md`
 - **Never** re-calculate TSS from FIT without reading the stored value first
-- **Never** estimate current fitness from memory — read `USER_PROFILE.md` or ask
+- **Never** silently report stale or guessed fitness. Fetch live via `tp_get_fitness`; if the TP tool fails or is unavailable, ask the rider — or fall back to the last-known value (`USER_PROFILE.md` / most recent reading) **with an explicit warning that you could not fetch the latest from TrainingPeaks.**
 - **Never** use Silca's 48/52 default if a measured F/R split exists in `USER_PROFILE.md`
 - **Never** compute TSB as same-day CTL − ATL. Use TP's lag-1 convention. Only use same-day for clearly-labelled end-of-day forecasts.
 - **Never** override a fresh TP reading with a bike-only projection.
+- **Never** call a *mutating* TrainingPeaks MCP tool (`tp_create_*`, `tp_update_*`, `tp_delete_*`, `tp_copy_workout`, `tp_reorder_workouts`, `tp_log_metrics`, `tp_schedule_library_workout`, `tp_add_workout_comment`, event/note/equipment writes) without explicit rider confirmation. Read tools (`tp_get_*`, `tp_analyze_*`, `tp_auth_status`) are free to call.
 - **Never** commit `USER_PROFILE.md` or any contents of `rides/`, `routes/`, `tests/`, `notes/`, `plans/`, `body-comp/`. They are personal data.

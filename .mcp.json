@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "trainingpeaks": {
+      "command": "/opt/miniconda3/envs/cycling/bin/tp-mcp",
+      "args": ["serve"]
+    }
+  }
+}

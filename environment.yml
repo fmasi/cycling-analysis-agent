@@ -16,3 +16,10 @@ dependencies:
   - pip
   - pip:
     - fitparse>=1.2
+    # TrainingPeaks MCP server (`tp-mcp serve`). Not on PyPI — installed from the
+    # GitHub release tag. Pure-Python (mcp/httpx/keyring/cryptography/pydantic),
+    # resolves on osx-arm64 + linux-64. The macOS-only `[browser]` extra (Safari
+    # cookie extraction) is NOT listed here — install it on the host only:
+    #   pip install "tp-mcp[browser] @ git+https://github.com/JamsusMaximus/trainingpeaks-mcp.git@v2.0.0"
+    # The OpenClaw/linux container authenticates via the TP_AUTH_COOKIE env var instead.
+    - "tp-mcp @ git+https://github.com/JamsusMaximus/trainingpeaks-mcp.git@v2.0.0"
