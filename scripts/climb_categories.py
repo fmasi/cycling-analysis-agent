@@ -26,6 +26,7 @@ def categorise(length_km, avg_grade_pct):
     return 'uncat', 0, '#888888', '#cccccc', index
 
 
+CAT3_INDEX_THRESHOLD = 6  # index = length_km * avg_grade; >= 6 is Cat 3 or harder
 STEEP_PEAK25_PCT = 8.0  # short-pitch gate threshold
 
 
@@ -44,7 +45,7 @@ def is_significant(climb, verification=None):
     >= 8%). Without verification, fall back to Cat 3+ or GPX max_grad_pct >= 8%."""
     _n, _p, _b, _f, index = categorise(climb["length_m"] / 1000.0,
                                        climb["avg_grad_pct"])
-    if index >= 6:
+    if index >= CAT3_INDEX_THRESHOLD:
         return True, f"Cat 3+ (index {index:.1f})"
     if verification is not None:
         if getattr(verification, "walls", None):
@@ -86,7 +87,7 @@ def select_climbs_for_detail(climbs, verifications=None, mode="auto", cap=8):
             continue
         _n, _p, _b, _f, index = categorise(c["length_m"] / 1000.0,
                                            c["avg_grad_pct"])
-        if index >= 6:
+        if index >= CAT3_INDEX_THRESHOLD:
             cat3.append(i)
         else:
             minor.append((_peak25(vers[i], c), i))

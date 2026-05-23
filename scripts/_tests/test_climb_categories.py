@@ -71,3 +71,10 @@ def test_select_mode_all_and_none():
 def test_select_mode_explicit_indices():
     climbs = [climb(2000, 4.0), climb(300, 2.0), climb(400, 3.0)]
     assert select_climbs_for_detail(climbs, mode=[1, 3]) == [0, 2]
+
+
+def test_select_cap_zero_keeps_cat3_drops_minor():
+    climbs = [climb(2000, 4.0), climb(300, 5.0)]  # one Cat3, one short-steep minor
+    vers = [FakeVer(), FakeVer(peak_25m=12.0)]
+    idx = select_climbs_for_detail(climbs, vers, mode="auto", cap=0)
+    assert idx == [0]  # Cat3 kept, minor dropped at cap 0
