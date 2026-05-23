@@ -57,6 +57,7 @@ class BikeConfig:
     tyre_pressure_uncertainty_psi: Optional[float] = None
     unvalidated_by_model: bool = False
     unvalidated_by_model_source: Optional[str] = None
+    gearing: Optional[dict] = None
 
     def validate_surface(self, surface: str) -> None:
         if surface in self.crr_by_surface:
@@ -111,6 +112,7 @@ def load_bike(slug: Optional[str] = None, *, profile: Optional[dict] = None) -> 
             assist = None
     tyre_pressure_psi = raw.get("tyre_pressure_psi") or None
     tp_uncertainty = raw.get("tyre_pressure_uncertainty_psi")
+    gearing = raw.get("gearing") or None
     return BikeConfig(
         slug=slug,
         name=raw["name"],
@@ -130,4 +132,5 @@ def load_bike(slug: Optional[str] = None, *, profile: Optional[dict] = None) -> 
         tyre_pressure_uncertainty_psi=float(tp_uncertainty) if tp_uncertainty is not None else None,
         unvalidated_by_model=bool(raw.get("unvalidated_by_model", False)),
         unvalidated_by_model_source=raw.get("unvalidated_by_model_source"),
+        gearing=gearing,
     )
