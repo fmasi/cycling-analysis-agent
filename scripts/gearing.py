@@ -5,6 +5,9 @@ analyse_climbs) to suggest a gear + cadence for a target speed on a climb.
 """
 from typing import Optional, Tuple
 
+CADENCE_MIN_RPM = 50.0   # floor for sustainable pedalling
+CADENCE_MAX_RPM = 110.0  # ceiling before technique breaks down
+
 
 def cadence_rpm(speed_kmh: float, chainring_t: int, cog_t: int,
                 wheel_circ_m: float) -> float:
@@ -40,7 +43,7 @@ def suggest_gear(speed_kmh: float, bike, prefer_rpm: float = 70.0
             rpm = cadence_rpm(speed_kmh, cr, cog, bike.wheel_circ_m)
             err = abs(rpm - prefer_rpm)
             all_combos.append((err, cr, cog, rpm))
-            if 50.0 <= rpm <= 110.0:
+            if CADENCE_MIN_RPM <= rpm <= CADENCE_MAX_RPM:
                 in_range.append((err, cr, cog, rpm))
 
     pool = in_range if in_range else all_combos
