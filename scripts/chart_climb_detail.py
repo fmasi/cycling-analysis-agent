@@ -154,8 +154,8 @@ def plot_climb_detail(arrays, climb, idx, out_path):
             bbox=dict(boxstyle='round,pad=0.5', facecolor=badge_col,
                       edgecolor='none'))
 
-    # Stats annotation bottom-right
-    if stats:
+    # Stats annotation bottom-right (suppressed on GPX charts where duration=0)
+    if stats and stats.get('duration_s', 0) > 0:
         mins = int(stats['duration_s'] // 60)
         secs = int(stats['duration_s'] % 60)
         stat_text = (f"{mins}:{secs:02d} · {stats['avg_w']:.0f} W avg · "

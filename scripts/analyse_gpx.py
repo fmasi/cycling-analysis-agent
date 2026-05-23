@@ -27,6 +27,8 @@ from physics_model import (
     speed_at_cadence_rpm, solve_speed_with_assist,
 )
 from bike_config import BikeConfig
+from climb_categories import select_climbs_for_detail
+from chart_climb_detail import plot_climb_detail
 
 
 # HR zone reference text — derived from USER_PROFILE.md (Karvonen, max=192,
@@ -490,7 +492,7 @@ def format_markdown(r):
 
 def render_overview_chart(gpx_path, climbs, include=(), exclude=(),
                            print_inventory=True, dists=None, elevs=None,
-                           data_source=None, walls=None):
+                           data_source=None, walls=None, out_dir=None):
     """Generate the TdF-style overview PNG.
 
     Always shows the full waypoint inventory (with keep/drop decisions and
@@ -517,7 +519,9 @@ def render_overview_chart(gpx_path, climbs, include=(), exclude=(),
         print(format_waypoint_table(items), file=sys.stderr)
 
     stem = Path(gpx_path).stem
-    out_dir = Path(__file__).parent.parent / 'rides' / 'charts'
+    if out_dir is None:
+        out_dir = Path(__file__).parent.parent / 'rides' / 'charts'
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f'{stem}-overview.png'
 
@@ -530,6 +534,31 @@ def render_overview_chart(gpx_path, climbs, include=(), exclude=(),
         str(out_path), title=data['name'], data_source=data_source,
         walls=walls)
     return out_path
+
+
+def match_verifications(climbs, report):
+    """Align each detected climb dict to its ClimbVerification by km overlap.
+    Returns a list parallel to `climbs`; None where no match."""
+    out = []
+    cvs = list(getattr(report, 'climbs', []) or []) if report else []
+    for c in climbs:
+        best = None
+        for cv in cvs:
+            lo = max(c['start_km'], cv.km_start)
+            hi = min(c['end_km'], cv.km_end)
+            overlap = max(0.0, hi - lo)
+            if overlap > 0 and (best is None or overlap > best[0]):
+                best = (overlap, cv)
+        out.append(best[1] if best else None)
+    return out
+
+
+def parse_climb_detail_mode(raw):
+    """'auto'|'all'|'none' pass through; '1,3' -> [1, 3]."""
+    raw = (raw or 'auto').strip()
+    if raw in ('auto', 'all', 'none'):
+        return raw
+    return [int(x) for x in raw.split(',') if x.strip()]
 
 
 def _parse_idx_list(s):
@@ -570,6 +599,13 @@ def main():
     parser.add_argument('--dem-root',
                         default=str(Path.home() / 'cycling-coach-dem'),
                         help='Path to local DEM tile root.')
+    parser.add_argument('--climb-detail', default='auto',
+                        help="Per-climb detail charts: 'auto' (significance "
+                             "gate), 'all', 'none', or comma indices e.g. 1,3")
+    parser.add_argument('--climb-detail-max', type=int, default=8,
+                        help='Cap on sub-Cat-3 detail charts (Cat 3+ never capped).')
+    parser.add_argument('--chart-dir', default='rides/charts',
+                        help='Output directory for charts.')
 
     from bike_cli import add_bike_args, resolve_bike
     add_bike_args(parser)
@@ -757,12 +793,48 @@ def main():
                         elevs=(report.stitched_elevs if use_hifi else None),
                         data_source=data_source,
                         walls=walls_for_chart or None,
+                        out_dir=args.chart_dir,
                     )
                     if chart_path:
                         print(
                             f'[Saved {data_source} chart to {chart_path}]',
                             file=sys.stderr,
                         )
+
+                # Per-climb detail charts (additive; never hard-fail the run).
+                try:
+                    climbs = result.get('climbs', [])
+                    if climbs:
+                        mode = parse_climb_detail_mode(args.climb_detail)
+                        vers = match_verifications(climbs, report)
+                        chosen = select_climbs_for_detail(
+                            climbs, vers, mode=mode, cap=args.climb_detail_max)
+                        _use_hifi = (
+                            report is not None
+                            and getattr(report, 'stitched_dists', None)
+                            and not getattr(args, 'gpx_only_chart', False)
+                        )
+                        if _use_hifi and getattr(report, 'stitched_dists', None):
+                            arrays = {
+                                'distance_m': np.asarray(report.stitched_dists, float),
+                                'altitude_m': np.asarray(report.stitched_elevs, float),
+                            }
+                        else:
+                            pg = parse_gpx(f)
+                            arrays = {
+                                'distance_m': np.asarray(pg['dists'], float),
+                                'altitude_m': np.asarray(pg['eles'], float),
+                            }
+                        chart_dir = Path(args.chart_dir)
+                        chart_dir.mkdir(parents=True, exist_ok=True)
+                        stem = Path(f).stem
+                        for idx in chosen:
+                            out_png = chart_dir / f'{stem}-climb{idx + 1}.png'
+                            if plot_climb_detail(arrays, climbs[idx], idx + 1, out_png):
+                                print(f'[Saved per-climb chart {out_png}]',
+                                      file=sys.stderr)
+                except Exception as e:
+                    print(f'⚠ per-climb detail skipped: {e}', file=sys.stderr)
 
 
 if __name__ == '__main__':
