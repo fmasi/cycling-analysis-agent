@@ -124,6 +124,8 @@ def test_render_report_contains_gear_line():
     import re
     assert re.search(r'\d+x\d+', output), \
         f"Expected gear notation NxM in render_report output:\n{output}"
+    assert re.search(r'\d+x\d+ \(\d+\)', output), \
+        f"Expected compact gear format NxM (RPM) in render_report output:\n{output}"
 
 
 def test_fmt_gear_none():

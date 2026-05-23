@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 
 CADENCE_MIN_RPM = 50.0   # floor for sustainable pedalling
 CADENCE_MAX_RPM = 110.0  # ceiling before technique breaks down
+CLIMBING_CADENCE_RPM = 70.0  # comfort target for climbing gear selection
 
 
 def cadence_rpm(speed_kmh: float, chainring_t: int, cog_t: int,

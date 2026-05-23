@@ -16,6 +16,8 @@ from typing import Optional
 # Sibling-script imports (analyse_gpx) — make scripts/ importable as a flat dir.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from gearing import suggest_gear, CLIMBING_CADENCE_RPM
+
 
 @dataclass
 class ClimbVerification:
@@ -238,10 +240,9 @@ def _compute_pacing(dists, elevs, peak_pct: float, *, bike=None, surface=None) -
     v_map = predict_speed(MAP_WORKING, avg_pct, bike=bike, surface=surface, system_weight_kg=sw)
     v_z3 = predict_speed(_Z3_POWER_W, avg_pct, bike=bike, surface=surface, system_weight_kg=sw)
 
-    from gearing import suggest_gear as _suggest_gear
-    g_ftp = _suggest_gear(v_ftp, bike, prefer_rpm=70.0)
-    g_map = _suggest_gear(v_map, bike, prefer_rpm=70.0)
-    g_z3  = _suggest_gear(v_z3,  bike, prefer_rpm=70.0)
+    g_ftp = suggest_gear(v_ftp, bike, prefer_rpm=CLIMBING_CADENCE_RPM)
+    g_map = suggest_gear(v_map, bike, prefer_rpm=CLIMBING_CADENCE_RPM)
+    g_z3  = suggest_gear(v_z3,  bike, prefer_rpm=CLIMBING_CADENCE_RPM)
 
     return {
         "length_m": length_m,
@@ -729,6 +730,8 @@ def stitch_profile(
     return out_d, out_e
 
 
+# Compact gear format for the hi-fi table line (rider-approved); the GPX-PACING
+# block in analyse_gpx uses a verbose "NxM @ R rpm" form per speed line.
 def _fmt_gear(g):
     """Format a (chainring_t, cog_t, rpm) tuple as 'CRxCOG (RPM)' or None."""
     if not g:
@@ -840,7 +843,7 @@ def render_report(report: FidelityReport) -> str:
             ftp_g = _fmt_gear(p.get("gear_ftp"))
             map_g = _fmt_gear(p.get("gear_map"))
             z3_g  = _fmt_gear(p.get("gear_z3"))
-            if not any([ftp_g, map_g, z3_g]):
+            if not any((ftp_g, map_g, z3_g)):
                 continue
             parts = []
             if ftp_g:
@@ -851,7 +854,7 @@ def render_report(report: FidelityReport) -> str:
                 parts.append(f"Z3 {z3_g}")
             lines.append(
                 f"- **Climb {i} (km {c.km_start:.2f})** "
-                f"gear @60–75 rpm — {' · '.join(parts)}"
+                f"Gear @60–75 rpm — {' · '.join(parts)}"
             )
 
     if report.missed_climbs:

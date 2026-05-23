@@ -27,7 +27,7 @@ from physics_model import (
     speed_at_cadence_rpm, solve_speed_with_assist,
 )
 from bike_config import BikeConfig
-from gearing import suggest_gear
+from gearing import suggest_gear, CLIMBING_CADENCE_RPM
 from climb_categories import select_climbs_for_detail
 from chart_climb_detail import plot_climb_detail
 
@@ -237,7 +237,7 @@ def predict_climb(climb, *, bike: BikeConfig, surface: str,
 
     # Gear suggestions at climbing cadence (70 rpm comfort target).
     def _gear_str(speed_kmh):
-        g = suggest_gear(speed_kmh, bike, prefer_rpm=70.0)
+        g = suggest_gear(speed_kmh, bike, prefer_rpm=CLIMBING_CADENCE_RPM)
         if not g:
             return None
         cr, cog, rpm = g
