@@ -30,7 +30,7 @@ class AssistConfig:
     levels: list[str]
     boost_mode: bool
     battery_wh: int
-    battery_range_km: str
+    battery_range_km: str | dict | None
     level_share: dict[str, float]
     default_level_flat: str
     default_level_climb_5pct: str
@@ -87,6 +87,27 @@ def load_bike(slug: Optional[str] = None, *, profile: Optional[dict] = None) -> 
     if isinstance(raw.get("assist"), dict):
         a = raw["assist"]
         try:
+            # cutoff_kph: explicit field if present, else the EU legal cutoff
+            # (the current USER_PROFILE.md schema names it `legal_cutoff_kph`).
+            cutoff = a.get("cutoff_kph")
+            if cutoff is None:
+                cutoff = a["legal_cutoff_kph"]
+            # level_share: explicit top-level dict if present (old schema), else
+            # derive each level's multiplier from levels.<L>.share (current
+            # schema, where `levels` is a per-mode dict).
+            level_share = a.get("level_share")
+            if level_share is None:
+                levels_block = a.get("levels")
+                if not isinstance(levels_block, dict):
+                    raise KeyError("level_share")
+                level_share = {
+                    lvl: d["share"]
+                    for lvl, d in levels_block.items()
+                    if isinstance(d, dict) and d.get("share") is not None
+                }
+            # `levels` as a name list works for either a dict (-> its keys) or a
+            # plain list.
+            levels_names = list(a.get("levels", []))
             assist = AssistConfig(
                 type=a["type"],
                 placement=a["placement"],
@@ -94,21 +115,27 @@ def load_bike(slug: Optional[str] = None, *, profile: Optional[dict] = None) -> 
                 peak_w=int(a["peak_w"]) if a.get("peak_w") is not None else None,
                 torque_nm=int(a["torque_nm"]) if a.get("torque_nm") is not None else None,
                 sensor=a["sensor"],
-                cutoff_kph=float(a["cutoff_kph"]),
-                levels=list(a["levels"]),
-                boost_mode=bool(a["boost_mode"]),
+                cutoff_kph=float(cutoff),
+                levels=levels_names,
+                boost_mode=bool(a.get("boost_mode", False)),
                 battery_wh=int(a["battery_wh"]),
-                battery_range_km=a["battery_range_km"],
-                level_share={k: float(v) for k, v in a["level_share"].items()},
+                battery_range_km=a.get("battery_range_km"),
+                level_share={k: float(v) for k, v in level_share.items()},
                 default_level_flat=a["default_level_flat"],
                 default_level_climb_5pct=a["default_level_climb_5pct"],
                 default_level_climb_10pct=a["default_level_climb_10pct"],
             )
-        except (KeyError, TypeError, ValueError, AttributeError):
-            # The frontmatter parser doesn't support block scalars / '-' lists,
-            # so a rich assist block may parse incompletely. Assist is optional
-            # and unused by physics that doesn't need it (e.g. tyre pressure),
-            # so degrade gracefully rather than blocking the whole bike load.
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            # Assist is optional and unused by physics that doesn't need it
+            # (e.g. tyre pressure), so degrade gracefully rather than blocking
+            # the whole bike load. Warn (don't silently swallow) so schema drift
+            # is visible — a silent except previously hid exactly this bug.
+            import sys as _sys
+            print(
+                f"⚠ assist block for bike '{slug}' did not parse "
+                f"({type(exc).__name__}: {exc}); continuing with assist=None.",
+                file=_sys.stderr,
+            )
             assist = None
     tyre_pressure_psi = raw.get("tyre_pressure_psi") or None
     tp_uncertainty = raw.get("tyre_pressure_uncertainty_psi")
