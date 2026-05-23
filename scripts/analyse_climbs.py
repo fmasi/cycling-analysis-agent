@@ -35,17 +35,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from analyse_fit import parse_fit, to_arrays, find_climbs
-
-
-CATEGORIES = [
-    # (lower_index_inclusive, name, points, badge_colour, fill_colour)
-    (80, 'HC',    20, '#000000', '#440000'),
-    (40, 'Cat 1', 10, '#cc4400', '#ff7700'),
-    (16, 'Cat 2',  5, '#cc9900', '#ffcc33'),
-    ( 6, 'Cat 3',  2, '#0066cc', '#3399ff'),
-    ( 2, 'Cat 4',  1, '#006633', '#33aa66'),
-    ( 0, 'uncat',  0, '#888888', '#cccccc'),
-]
+from climb_categories import CATEGORIES, categorise
 
 GRADE_COLOURS = [
     (4,  '#e8e8e8'),   # 0-4%   light grey
@@ -58,15 +48,6 @@ GRADE_COLOURS = [
 # Reference benchmark: a 1.45 km climb at 9% average grade ≈ index 13.05
 # (high Cat 3). Used to give the rider a "% of a known Cat 3" reading.
 REFERENCE_CLIMB_INDEX = 1.45 * 9.0  # 13.05
-
-
-def categorise(length_km, avg_grade_pct):
-    """Return (category_name, kom_points, badge_colour, fill_colour, index)."""
-    index = length_km * avg_grade_pct
-    for threshold, name, points, badge, fill in CATEGORIES:
-        if index >= threshold:
-            return name, points, badge, fill, index
-    return 'uncat', 0, '#888888', '#cccccc', index
 
 
 def grade_colour(grade_pct):
