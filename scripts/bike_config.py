@@ -23,8 +23,8 @@ class AssistConfig:
     type: str
     placement: str
     rated_w: int
-    peak_w: int
-    torque_nm: int
+    peak_w: Optional[int]
+    torque_nm: Optional[int]
     sensor: str
     cutoff_kph: float
     levels: list[str]
@@ -83,25 +83,32 @@ def load_bike(slug: Optional[str] = None, *, profile: Optional[dict] = None) -> 
         )
     raw = bikes[slug]
     assist = None
-    if "assist" in raw:
+    if isinstance(raw.get("assist"), dict):
         a = raw["assist"]
-        assist = AssistConfig(
-            type=a["type"],
-            placement=a["placement"],
-            rated_w=int(a["rated_w"]),
-            peak_w=int(a["peak_w"]),
-            torque_nm=int(a["torque_nm"]),
-            sensor=a["sensor"],
-            cutoff_kph=float(a["cutoff_kph"]),
-            levels=list(a["levels"]),
-            boost_mode=bool(a["boost_mode"]),
-            battery_wh=int(a["battery_wh"]),
-            battery_range_km=a["battery_range_km"],
-            level_share={k: float(v) for k, v in a["level_share"].items()},
-            default_level_flat=a["default_level_flat"],
-            default_level_climb_5pct=a["default_level_climb_5pct"],
-            default_level_climb_10pct=a["default_level_climb_10pct"],
-        )
+        try:
+            assist = AssistConfig(
+                type=a["type"],
+                placement=a["placement"],
+                rated_w=int(a["rated_w"]),
+                peak_w=int(a["peak_w"]) if a.get("peak_w") is not None else None,
+                torque_nm=int(a["torque_nm"]) if a.get("torque_nm") is not None else None,
+                sensor=a["sensor"],
+                cutoff_kph=float(a["cutoff_kph"]),
+                levels=list(a["levels"]),
+                boost_mode=bool(a["boost_mode"]),
+                battery_wh=int(a["battery_wh"]),
+                battery_range_km=a["battery_range_km"],
+                level_share={k: float(v) for k, v in a["level_share"].items()},
+                default_level_flat=a["default_level_flat"],
+                default_level_climb_5pct=a["default_level_climb_5pct"],
+                default_level_climb_10pct=a["default_level_climb_10pct"],
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            # The frontmatter parser doesn't support block scalars / '-' lists,
+            # so a rich assist block may parse incompletely. Assist is optional
+            # and unused by physics that doesn't need it (e.g. tyre pressure),
+            # so degrade gracefully rather than blocking the whole bike load.
+            assist = None
     tyre_pressure_psi = raw.get("tyre_pressure_psi") or None
     tp_uncertainty = raw.get("tyre_pressure_uncertainty_psi")
     return BikeConfig(

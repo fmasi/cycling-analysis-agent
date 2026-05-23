@@ -108,15 +108,22 @@ def _coerce_scalar(raw: str) -> Any:
         if not inner:
             return []
         return [_coerce_scalar(x.strip()) for x in inner.split(",")]
-    # Strip optional inline comment (only outside quotes)
+    # Quoted string (single or double), tolerating a trailing inline comment.
+    # rfind keeps escaped inner quotes (e.g. 20\") intact while still dropping a
+    # `"value"  # comment` tail.
+    if s.startswith('"') or s.startswith("'"):
+        q = s[0]
+        end = s.rfind(q)
+        if end > 0:
+            after = s[end + 1:].lstrip()
+            if after == "" or after.startswith("#"):
+                return s[1:end]
+    # Strip optional inline comment (unquoted scalars only)
     if "#" in s:
-        if not (s.startswith('"') or s.startswith("'")):
-            s = s.split("#", 1)[0].strip()
-    # Strip quotes
-    if (s.startswith('"') and s.endswith('"')) or (
-        s.startswith("'") and s.endswith("'")
-    ):
-        s = s[1:-1]
+        s = s.split("#", 1)[0].strip()
+    # Null
+    if s.lower() in ("null", "none", "~"):
+        return None
     # Boolean
     if s.lower() in ("true", "false"):
         return s.lower() == "true"
