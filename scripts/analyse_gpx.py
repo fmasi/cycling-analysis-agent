@@ -27,6 +27,7 @@ from physics_model import (
     speed_at_cadence_rpm, solve_speed_with_assist,
 )
 from bike_config import BikeConfig
+from gearing import suggest_gear
 from climb_categories import select_climbs_for_detail
 from chart_climb_detail import plot_climb_detail
 
@@ -233,6 +234,19 @@ def predict_climb(climb, *, bike: BikeConfig, surface: str,
 
     out['vam_at_ftp_mh'] = round(
         vam_at_power(FTP, grad, bike=bike, surface=surface, system_weight_kg=sw), 0)
+
+    # Gear suggestions at climbing cadence (70 rpm comfort target).
+    def _gear_str(speed_kmh):
+        g = suggest_gear(speed_kmh, bike, prefer_rpm=70.0)
+        if not g:
+            return None
+        cr, cog, rpm = g
+        return f"{cr}x{cog} @ {rpm:.0f} rpm"
+
+    out['gear_str_FTP_171'] = _gear_str(out['speed_kmh_FTP_171'])
+    out['gear_str_MAP_210'] = _gear_str(out['speed_kmh_MAP_210'])
+    out['gear_str_Z3_130'] = _gear_str(out['speed_kmh_Z3_130'])
+
     # Survival check at max grade
     if climb['max_grad_pct'] > 5:
         out['power_for_60rpm_at_max_grad_w'] = round(
@@ -462,12 +476,15 @@ def format_markdown(r):
                          f"**Max**: {c['max_grad_pct']:.1f}%")
             lines.append("<!-- BEGIN GPX-PACING -->")
             if has_power_meter:
+                _g_ftp = f" · {p['gear_str_FTP_171']}" if p.get('gear_str_FTP_171') else ""
+                _g_map = f" · {p['gear_str_MAP_210']}" if p.get('gear_str_MAP_210') else ""
+                _g_z3  = f" · {p['gear_str_Z3_130']}"  if p.get('gear_str_Z3_130')  else ""
                 lines.append(f"- **Speed @ FTP (171W)**: {p['speed_kmh_FTP_171']} km/h "
-                             f"(~{p['time_min_FTP_171']} min)")
+                             f"(~{p['time_min_FTP_171']} min){_g_ftp}")
                 lines.append(f"- **Speed @ MAP (210W)**: {p['speed_kmh_MAP_210']} km/h "
-                             f"(~{p['time_min_MAP_210']} min)")
+                             f"(~{p['time_min_MAP_210']} min){_g_map}")
                 lines.append(f"- **Speed @ Z3 (130W)**: {p['speed_kmh_Z3_130']} km/h "
-                             f"(~{p['time_min_Z3_130']} min)")
+                             f"(~{p['time_min_Z3_130']} min){_g_z3}")
                 lines.append(f"- **VAM at FTP**: {p['vam_at_ftp_mh']:.0f} m/h")
                 if 'power_for_60rpm_at_max_grad_w' in p:
                     lines.append(f"- **Survival (60rpm in 30×32 at max grade)**: "

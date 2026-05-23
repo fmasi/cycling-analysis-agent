@@ -37,3 +37,22 @@ def test_climb_detail_chart_generated_lofi(tmp_path):
     assert res.returncode == 0, res.stderr
     pngs = list(charts.glob("steeptest-climb*.png"))
     assert pngs, f"no per-climb png; stdout={res.stdout}\nstderr={res.stderr}"
+
+
+def test_pacing_has_gear_and_rpm(tmp_path):
+    gpx = tmp_path / "steeptest2.gpx"
+    _write_gpx(gpx)
+    charts = tmp_path / "charts2"
+    charts.mkdir()
+    cmd = [PY, "scripts/analyse_gpx.py", "--bike", "tripster", "--surface",
+           "tarmac", "--save", "--no-verify", "--climb-detail", "all",
+           "--chart-dir", str(charts), str(gpx)]
+    res = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+    assert res.returncode == 0, res.stderr
+    md_path = ROOT / "routes" / "steeptest2-prediction.md"
+    md = md_path.read_text()
+    # Gear notation like "30x28" or "34x28", and "rpm" must appear
+    assert "rpm" in md.lower(), f"'rpm' not found in pacing output:\n{md}"
+    import re
+    assert re.search(r'\d+x\d+', md), f"gear notation (NxM) not found:\n{md}"
+    md_path.unlink()

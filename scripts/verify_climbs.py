@@ -237,6 +237,12 @@ def _compute_pacing(dists, elevs, peak_pct: float, *, bike=None, surface=None) -
     v_ftp = predict_speed(FTP, avg_pct, bike=bike, surface=surface, system_weight_kg=sw)
     v_map = predict_speed(MAP_WORKING, avg_pct, bike=bike, surface=surface, system_weight_kg=sw)
     v_z3 = predict_speed(_Z3_POWER_W, avg_pct, bike=bike, surface=surface, system_weight_kg=sw)
+
+    from gearing import suggest_gear as _suggest_gear
+    g_ftp = _suggest_gear(v_ftp, bike, prefer_rpm=70.0)
+    g_map = _suggest_gear(v_map, bike, prefer_rpm=70.0)
+    g_z3  = _suggest_gear(v_z3,  bike, prefer_rpm=70.0)
+
     return {
         "length_m": length_m,
         "gain_m": gain_m,
@@ -250,6 +256,9 @@ def _compute_pacing(dists, elevs, peak_pct: float, *, bike=None, surface=None) -
         "vam_ftp": vam_at_power(FTP, avg_pct, bike=bike, surface=surface, system_weight_kg=sw),
         "survival_w": power_for_60rpm_in_lowest_gear(
             peak_pct, bike=bike, surface=surface, system_weight_kg=sw),
+        "gear_ftp": g_ftp,
+        "gear_map": g_map,
+        "gear_z3":  g_z3,
     }
 
 
@@ -720,6 +729,14 @@ def stitch_profile(
     return out_d, out_e
 
 
+def _fmt_gear(g):
+    """Format a (chainring_t, cog_t, rpm) tuple as 'CRxCOG (RPM)' or None."""
+    if not g:
+        return None
+    cr, cog, rpm = g
+    return f"{cr}x{cog} ({rpm:.0f})"
+
+
 def render_report(report: FidelityReport) -> str:
     lines = ["<!-- BEGIN FIDELITY -->", "## Fidelity Report", ""]
     lines.append(f"**Verdict:** {VERDICT_LINE[report.verdict]}")
@@ -811,6 +828,30 @@ def render_report(report: FidelityReport) -> str:
                 f"{p['duration_ftp_min']:.1f} | "
                 f"{p['vam_ftp']:.0f} | "
                 f"{p['survival_w']:.0f} |"
+            )
+
+        # Compact gear lines — one per climb, beneath the table.
+        # Markdown tables can't contain non-row lines, so these go after.
+        lines.append("")
+        for i, c in enumerate(report.climbs, start=1):
+            p = c.verified_pacing
+            if not p:
+                continue
+            ftp_g = _fmt_gear(p.get("gear_ftp"))
+            map_g = _fmt_gear(p.get("gear_map"))
+            z3_g  = _fmt_gear(p.get("gear_z3"))
+            if not any([ftp_g, map_g, z3_g]):
+                continue
+            parts = []
+            if ftp_g:
+                parts.append(f"FTP {ftp_g}")
+            if map_g:
+                parts.append(f"MAP {map_g}")
+            if z3_g:
+                parts.append(f"Z3 {z3_g}")
+            lines.append(
+                f"- **Climb {i} (km {c.km_start:.2f})** "
+                f"gear @60–75 rpm — {' · '.join(parts)}"
             )
 
     if report.missed_climbs:
