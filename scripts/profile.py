@@ -139,6 +139,9 @@ def _coerce_scalar(raw: str) -> Any:
     return s
 
 
+_BLOCK_SCALAR_RE = re.compile(r"^[|>][+\-]?$")
+
+
 def _parse_simple_yaml(text: str) -> dict[str, Any]:
     """Parse an arbitrarily-nested indented YAML doc from frontmatter.
 
@@ -151,19 +154,25 @@ def _parse_simple_yaml(text: str) -> dict[str, Any]:
         - Nested dicts via indentation (arbitrary depth)
         - Inline comments stripped with '#'
         - Quoted strings (single or double)
+        - Block scalars: `key: |` and `key: >` (with optional chomping
+          indicators `|-`, `|+`, `>-`, `>+`). Continuation lines are
+          consumed as the scalar value and are never parsed as sibling keys.
 
     Does NOT support:
-        - Multi-line strings
         - Anchors / aliases
         - Flow-style dicts
-        - Block-style lists with '-' bullets
+        - Block-style lists with '-' bullets (as YAML sequences)
     """
     root: dict[str, Any] = {}
     # stack entries are (indent_level, dict_node)
     # indent -1 is a sentinel for the root level
     stack: list[tuple[int, dict]] = [(-1, root)]
 
-    for raw_line in text.splitlines():
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        raw_line = lines[i]
+        i += 1
         line = raw_line.rstrip()
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -177,7 +186,37 @@ def _parse_simple_yaml(text: str) -> dict[str, Any]:
             continue
         key = key.strip()
         val = val.strip()
-        if val == "":
+        if _BLOCK_SCALAR_RE.match(val):
+            # Block scalar: consume all subsequent lines whose indentation is
+            # strictly greater than this key's indent. Those lines form the
+            # scalar's text and must NOT be treated as sibling/nested keys.
+            style = val[0]  # '|' (literal) or '>' (folded)
+            body_lines: list[str] = []
+            while i < len(lines):
+                next_raw = lines[i]
+                next_stripped = next_raw.rstrip()
+                # A blank line is still part of the block scalar body
+                if next_stripped == "":
+                    body_lines.append("")
+                    i += 1
+                    continue
+                next_indent = len(next_raw) - len(next_raw.lstrip())
+                if next_indent > indent:
+                    # Continuation line — remove the common leading indent
+                    # (use indent+1 worth of spaces, i.e. strip to what a
+                    # child would have, preserving any extra indentation)
+                    body_lines.append(next_stripped.lstrip())
+                    i += 1
+                else:
+                    # Dedented back to this key's level or above — block ends
+                    break
+            # Join according to style
+            if style == "|":
+                scalar_value = "\n".join(body_lines)
+            else:  # '>'
+                scalar_value = " ".join(line for line in body_lines if line)
+            parent[key] = scalar_value
+        elif val == "":
             # New nested dict scope
             new_dict: dict[str, Any] = {}
             parent[key] = new_dict
