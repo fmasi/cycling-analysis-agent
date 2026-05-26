@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from bike_config import load_bike
 from verify_climbs import (
     densify_polyline,
     longest_run_above,
@@ -15,6 +16,9 @@ from verify_climbs import (
     FidelityReport,
     ClimbVerification,
 )
+
+# Default bike used by tests that exercise the full verify_route pacing path.
+DEFAULT_BIKE = load_bike("tripster")
 
 
 def test_densify_polyline_5m_stride():
@@ -161,7 +165,7 @@ def test_verify_route_flags_spike(tmp_path):
     gpx = tmp_path / "spike.gpx"
     _write_synthetic_gpx(gpx, lat0=51.0, lon0=0.0)
     dem = FakeDEM(lat0=51.0, lon0=0.0)
-    report = verify_route(gpx, dem, fallback=None)
+    report = verify_route(gpx, dem, fallback=None, bike=DEFAULT_BIKE, surface="tarmac")
 
     assert len(report.climbs) >= 1
     # The climb that contains the spike at offset ~7 km
@@ -220,7 +224,7 @@ def test_detect_missed_climbs_returns_ClimbVerification_with_fine_peak(tmp_path)
     gpx = tmp_path / "flat.gpx"
     _write_flat_gpx(gpx)
     dem = FlatGpxClimbingDEM(lat0=51.0, lon0=0.0)
-    report = verify_route(gpx, dem, fallback=None)
+    report = verify_route(gpx, dem, fallback=None, bike=DEFAULT_BIKE, surface="tarmac")
 
     # find_climbs on a flat GPX may produce noisy pseudo-climbs near the edges
     # (km 0.x with 0% peak) — we don't assert about declared climbs.

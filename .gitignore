@@ -63,6 +63,7 @@ secrets/
 /tests/*
 !/tests/.gitkeep
 !/tests/.gitignore
+!/tests/test_*.py
 
 /notes/*
 !/notes/.gitkeep

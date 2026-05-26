@@ -6,8 +6,10 @@ load from USER_PROFILE.md via scripts/profile.py — see that module for the
 fallback defaults that apply when no profile exists.
 """
 
+import math
 import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -17,69 +19,84 @@ from profile import (  # noqa: E402
     MAP_WORKING,
     AC_FRESH_EST,
     NM_PEAK,
-    RIDER_WEIGHT_KG,
-    BIKE_WEIGHT_KG,
-    SYSTEM_WEIGHT_KG,
-    CDA_DEFAULT,
-    CRR_DEFAULT,
-    DRIVETRAIN_EFFICIENCY,
     AIR_DENSITY,
     GRAVITY,
     WHEEL_CIRCUMFERENCE_M,
     power_zone_bounds,
 )
+from bike_config import BikeConfig, load_bike
 
-# CRR presets — see CLAUDE.md for when each applies. The "default" used by the
-# physics functions is `CRR_DEFAULT` (loaded from the profile); these are
-# named alternatives the rider can pass explicitly.
+# CRR presets — see CLAUDE.md for when each applies. Bike-specific CRR is set
+# in the bikes: block (loaded via BikeConfig); these named constants are
+# alternatives the rider can pass explicitly for one-off calculations.
 CRR_OPTIMAL = 0.0050        # latex/TPU at Silca-optimal pressure
 CRR_MID = 0.0055            # intermediate pressure
 CRR_OVERPRESSURE = 0.0058   # high pressure above break-point, OR butyl tubes
 
 
-def predict_speed(power_crank_w, grade_pct, system_weight_kg=SYSTEM_WEIGHT_KG,
-                  cda=CDA_DEFAULT, crr=CRR_DEFAULT, eta=DRIVETRAIN_EFFICIENCY,
-                  rho=AIR_DENSITY, g=GRAVITY):
-    """
-    Predict speed (km/h) given crank power (W) and grade (%).
+def predict_speed(
+    power_crank_w: float,
+    grade_pct: float,
+    *,
+    bike: BikeConfig,
+    surface: str,
+    system_weight_kg: float,
+    rho: float = AIR_DENSITY,
+    g: float = GRAVITY,
+) -> float:
+    """Speed in km/h that the given rider power produces on the given bike+surface+grade.
+
+    All bike-specific physics (CdA, CRR, drivetrain efficiency) come from the BikeConfig.
 
     Solves: P_wheel = (½ρCdA·v² + CRR·m·g + m·g·sin(θ)) · v
     where P_wheel = P_crank × η_drive
     """
+    crr = bike.crr_by_surface[surface]
+    cda = bike.cda
+    eta = bike.drivetrain_efficiency
     p_wheel = power_crank_w * eta
-    theta = np.arctan(grade_pct / 100)
-    sin_theta = np.sin(theta)
+    theta = math.atan(grade_pct / 100.0)
 
-    a = 0.5 * rho * cda
-    b = (crr + sin_theta) * system_weight_kg * g
-    c = -p_wheel
+    # Solve p_wheel = (0.5 * rho * cda * v^2 + crr * m * g + m * g * sin(theta)) * v
+    # Iteratively (bisection) for v in m/s.
+    lo, hi = 0.01, 30.0  # m/s
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        rhs = (0.5 * rho * cda * mid * mid + crr * system_weight_kg * g + system_weight_kg * g * math.sin(theta)) * mid
+        if rhs < p_wheel:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi) * 3.6  # m/s → km/h
 
-    # Cubic in v: a·v³ + b·v + c = 0
-    coeffs = [a, 0, b, c]
-    roots = np.roots(coeffs)
-    real_roots = [r.real for r in roots if np.isreal(r) and r.real > 0]
-    if not real_roots:
-        return 0.0
-    return min(real_roots) * 3.6  # m/s → km/h
 
-
-def predict_power(speed_kmh, grade_pct, system_weight_kg=SYSTEM_WEIGHT_KG,
-                  cda=CDA_DEFAULT, crr=CRR_DEFAULT, eta=DRIVETRAIN_EFFICIENCY,
-                  rho=AIR_DENSITY, g=GRAVITY):
-    """
-    Predict required crank power (W) given target speed (km/h) and grade (%).
-    """
+def predict_power(
+    speed_kmh: float,
+    grade_pct: float,
+    *,
+    bike: BikeConfig,
+    surface: str,
+    system_weight_kg: float,
+    rho: float = AIR_DENSITY,
+    g: float = GRAVITY,
+) -> float:
+    """Crank power required to hold the given speed on the given bike+surface+grade."""
+    crr = bike.crr_by_surface[surface]
+    cda = bike.cda
+    eta = bike.drivetrain_efficiency
     v = speed_kmh / 3.6
-    theta = np.arctan(grade_pct / 100)
-    sin_theta = np.sin(theta)
-
-    p_wheel = (0.5 * rho * cda * v**2 + (crr + sin_theta) * system_weight_kg * g) * v
+    theta = math.atan(grade_pct / 100.0)
+    p_wheel = (0.5 * rho * cda * v * v + crr * system_weight_kg * g + system_weight_kg * g * math.sin(theta)) * v
     return p_wheel / eta
 
 
-def speed_at_cadence_rpm(cadence_rpm, gear_ratio, wheel_circ_m=WHEEL_CIRCUMFERENCE_M):
-    """Speed (km/h) for a given cadence and gear ratio."""
-    return cadence_rpm * gear_ratio * wheel_circ_m * 60 / 1000
+def speed_at_cadence_rpm(cadence_rpm: float, gear_ratio: float, wheel_circ_m: float = WHEEL_CIRCUMFERENCE_M) -> float:
+    """Pure kinematic — speed (km/h) for a given cadence and gear ratio.
+
+    Pass ``wheel_circ_m=bike.wheel_circ_m`` for bike-specific results; defaults to the
+    profile's default wheel circumference when called without the argument.
+    """
+    return cadence_rpm * gear_ratio * wheel_circ_m * 60.0 / 1000.0  # km/h
 
 
 def power_uncertainty_envelope(predicted_speed_kmh, grade_pct):
@@ -96,23 +113,34 @@ def power_uncertainty_envelope(predicted_speed_kmh, grade_pct):
         return 2.0  # flat is dominated by CdA uncertainty
 
 
-def vam_at_power(power_crank_w, grade_pct, system_weight_kg=SYSTEM_WEIGHT_KG,
-                 **kwargs):
-    """Vertical ascent metres per hour (VAM) at given power and grade."""
-    speed_kmh = predict_speed(power_crank_w, grade_pct, system_weight_kg, **kwargs)
-    return speed_kmh * 1000 * grade_pct / 100  # m/h
+def vam_at_power(
+    power_crank_w: float,
+    grade_pct: float,
+    *,
+    bike: BikeConfig,
+    surface: str,
+    system_weight_kg: float,
+) -> float:
+    """Vertical Ascent Metres / hour = climb_speed_m_per_s × sin(theta) × 3600."""
+    v_kmh = predict_speed(power_crank_w, grade_pct, bike=bike, surface=surface,
+                           system_weight_kg=system_weight_kg)
+    v_ms = v_kmh / 3.6
+    theta = math.atan(grade_pct / 100.0)
+    return v_ms * math.sin(theta) * 3600.0
 
 
-def power_for_60rpm_in_lowest_gear(grade_pct, lowest_ratio=30/32,
-                                   system_weight_kg=SYSTEM_WEIGHT_KG, **kwargs):
-    """
-    Power needed to maintain 60 rpm (the minimum sustainable cadence under load)
-    in the lowest gear (default 30×32 = ratio 0.94) on a given grade.
-
-    This is the 'survival number' for steep climbs.
-    """
-    speed_kmh = speed_at_cadence_rpm(60, lowest_ratio)
-    return predict_power(speed_kmh, grade_pct, system_weight_kg, **kwargs)
+def power_for_60rpm_in_lowest_gear(
+    grade_pct: float,
+    lowest_ratio: float = 30 / 32,
+    *,
+    bike: BikeConfig,
+    surface: str,
+    system_weight_kg: float,
+) -> float:
+    """Crank power required to spin the lowest gear at 60 rpm on the given grade."""
+    v_kmh = speed_at_cadence_rpm(60.0, lowest_ratio, wheel_circ_m=bike.wheel_circ_m)
+    return predict_power(v_kmh, grade_pct, bike=bike, surface=surface,
+                          system_weight_kg=system_weight_kg)
 
 
 # Power zones — materialised from the profile's FTP/MAP/AC/NM.
@@ -129,19 +157,102 @@ def zone_for_power(power_w):
     return ZONES[-1][0]
 
 
+from dataclasses import dataclass
+
+
+@dataclass
+class AssistedSpeedResult:
+    speed_kmh: float
+    rider_w: float
+    motor_w: float
+    wh_per_hour: float
+
+
+def solve_speed_with_assist(
+    rider_w: float,
+    grade_pct: float,
+    *,
+    bike: BikeConfig,
+    surface: str,
+    system_weight_kg: float,
+    assist_level: str,
+    rho: float = AIR_DENSITY,
+    g: float = GRAVITY,
+) -> AssistedSpeedResult:
+    """Solve combined rider+motor wheel power for an e-assist bike.
+
+    Motor adds power proportional to rider input via bike.assist.level_share[level],
+    capped at bike.assist.rated_w, but only when speed < bike.assist.cutoff_kph.
+    Above cutoff, motor_w = 0.
+
+    Returns rider_w, motor_w, combined speed, and Wh/hour drain.
+    """
+    assert bike.assist is not None, f"bike '{bike.slug}' has no assist block"
+    share = bike.assist.level_share[assist_level]
+    motor_cap = bike.assist.rated_w
+    cutoff_kmh = bike.assist.cutoff_kph
+    crr = bike.crr_by_surface[surface]
+    eta = bike.drivetrain_efficiency
+    theta = math.atan(grade_pct / 100.0)
+
+    # Start optimistic: assume motor is active at min(share * rider_w, motor_cap).
+    candidate_motor = min(share * rider_w, motor_cap)
+    p_wheel = (rider_w + candidate_motor) * eta
+
+    lo, hi = 0.01, 30.0  # m/s
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        rhs = (0.5 * rho * bike.cda * mid * mid + crr * system_weight_kg * g
+               + system_weight_kg * g * math.sin(theta)) * mid
+        if rhs < p_wheel:
+            lo = mid
+        else:
+            hi = mid
+    v_ms = 0.5 * (lo + hi)
+    v_kmh = v_ms * 3.6
+
+    if v_kmh > cutoff_kmh:
+        # Above cutoff → motor disengages; re-solve with rider only.
+        candidate_motor = 0.0
+        p_wheel = rider_w * eta
+        lo, hi = 0.01, 30.0
+        for _ in range(80):
+            mid = 0.5 * (lo + hi)
+            rhs = (0.5 * rho * bike.cda * mid * mid + crr * system_weight_kg * g
+                   + system_weight_kg * g * math.sin(theta)) * mid
+            if rhs < p_wheel:
+                lo = mid
+            else:
+                hi = mid
+        v_kmh = 0.5 * (lo + hi) * 3.6
+
+    return AssistedSpeedResult(
+        speed_kmh=v_kmh,
+        rider_w=float(rider_w),
+        motor_w=float(candidate_motor),
+        wh_per_hour=float(candidate_motor),
+    )
+
+
 if __name__ == '__main__':
     # Self-test: print climb predictions at FTP and MAP for a 9% grade,
     # which is roughly the average of a Cat-3 ascent.
-    print(f'Sample climb @ 9% grade, system weight {SYSTEM_WEIGHT_KG:.1f} kg, '
-          f'CdA {CDA_DEFAULT:.2f}, CRR {CRR_DEFAULT:.4f}:')
+    _default_bike = load_bike()
+    _surface = _default_bike.surfaces_supported[0]
+    _sw = _default_bike.system_weight_kg_default
+    print(f'Sample climb @ 9% grade, system weight {_sw:.1f} kg, '
+          f'CdA {_default_bike.cda:.2f}, CRR {_default_bike.crr_by_surface[_surface]:.4f}:')
     print()
     for power, label in [(FTP, f'FTP {FTP}W'), (MAP_WORKING, f'MAP {MAP_WORKING}W')]:
-        speed = predict_speed(power, 9.0)
+        speed = predict_speed(power, 9.0, bike=_default_bike, surface=_surface,
+                               system_weight_kg=_sw)
         time_min = 1.4 / speed * 60
-        vam = vam_at_power(power, 9.0)
+        vam = vam_at_power(power, 9.0, bike=_default_bike, surface=_surface,
+                            system_weight_kg=_sw)
         print(f'  {label:20s}  {speed:5.2f} km/h  {time_min:4.1f} min  VAM {vam:.0f} m/h')
 
     print()
     print('Survival check at 16% pitch:')
-    survival_p = power_for_60rpm_in_lowest_gear(16.0)
-    print(f'  Power for 60 rpm in 30×32: {survival_p:.0f} W ({survival_p/FTP*100:.0f}% FTP)')
+    survival_p = power_for_60rpm_in_lowest_gear(16.0, bike=_default_bike, surface=_surface,
+                                                 system_weight_kg=_sw)
+    print(f'  Power for 60 rpm in default lowest gear: {survival_p:.0f} W ({survival_p/FTP*100:.0f}% FTP)')
