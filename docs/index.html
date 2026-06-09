@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cycling-analysis-agent — an AI cycling coach you host yourself</title>
+<meta name="description" content="An AI cycling coach you host yourself: reads your rides, predicts your routes, tracks your form, and verifies every climb against 1-metre LIDAR. A Claude agent with a directeur sportif's attitude.">
+<style>
+  :root{
+    --bg:#fbfaf7; --panel:#ffffff; --ink:#1b1b18; --muted:#6f6a60;
+    --line:#e8e3d7; --kom:#d72638; --kom-dark:#a81d2c; --ink2:#3a372f;
+    --g1:#4fa45a; --g2:#f4a02c; --g3:#d12e2e;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.62;
+    background-image:
+      repeating-linear-gradient(0deg,transparent,transparent 38px,rgba(120,110,90,.05) 38px,rgba(120,110,90,.05) 39px);}
+  .dots{height:13px;background:radial-gradient(var(--kom) 30%,transparent 32%) 0 0/16px 16px;opacity:.9}
+  .wrap{max-width:980px;margin:0 auto;padding:0 22px}
+  a{color:var(--kom-dark);text-decoration:none;font-weight:600}
+  a:hover{text-decoration:underline}
+  header{padding:62px 0 18px}
+  .mark{font-family:var(--mono);font-size:13px;letter-spacing:.1em;color:var(--kom);text-transform:lowercase;font-weight:700}
+  h1{font-size:clamp(30px,5.2vw,52px);line-height:1.08;margin:12px 0 12px;font-weight:820;letter-spacing:-.02em}
+  h1 .u{background:linear-gradient(90deg,var(--g1),var(--g2) 55%,var(--g3));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .tag{font-size:clamp(16px,2.3vw,20px);color:var(--ink2);max-width:720px}
+  .badges{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0}
+  .badge{font-family:var(--mono);font-size:12px;color:var(--ink2);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 11px}
+  .badge.kom{color:#fff;background:var(--kom);border-color:var(--kom)}
+  .cta{display:flex;flex-wrap:wrap;gap:12px;margin:6px 0 8px}
+  .btn{font-weight:700;border-radius:10px;padding:11px 18px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+  .btn.primary{background:var(--kom);border-color:var(--kom);color:#fff}
+  .btn:hover{text-decoration:none;border-color:var(--kom)}
+  figure{margin:26px 0 0}
+  figure img{width:100%;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:0 10px 30px rgba(80,60,30,.08)}
+  figcaption{color:var(--muted);font-size:14px;text-align:center;margin-top:8px}
+  section{padding:38px 0;border-top:1px solid var(--line)}
+  h2{font-size:13px;font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--kom);margin:0 0 16px}
+  .lead{font-size:18px}
+  .muted{color:var(--muted)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .card h3{margin:0 0 6px;font-size:15.5px}
+  .card p{margin:0;color:var(--muted);font-size:14.5px}
+  blockquote{margin:18px 0 0;padding:14px 18px;background:#fff;border-left:4px solid var(--kom);border-radius:0 10px 10px 0;color:var(--ink2)}
+  table{width:100%;border-collapse:collapse;font-size:14.5px;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  td,th{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-size:12.5px;text-transform:uppercase;letter-spacing:.05em}
+  code{font-family:var(--mono);background:#f3efe6;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:13px}
+  footer{padding:36px 0 64px;border-top:1px solid var(--line);color:var(--muted);font-size:14.5px}
+</style>
+</head>
+<body>
+<div class="dots"></div>
+<div class="wrap">
+
+  <header>
+    <div class="mark">cycling-analysis-agent</div>
+    <h1>Your AI cycling coach.<br><span class="u">With opinions.</span></h1>
+    <p class="tag">A Claude agent you host yourself — it reads your rides, predicts your routes, tracks
+       your form, and verifies every climb against <b>1-metre LIDAR</b> so the pacing is actually right.
+       A physicist's model with a <em>directeur sportif's</em> attitude.</p>
+    <p style="font-family:var(--mono);font-size:13px;color:var(--kom);margin:14px 0 0;font-weight:700">“Shut up, legs.” — your new coach, probably.</p>
+    <div class="badges">
+      <span class="badge">Python 3.11+</span>
+      <span class="badge">Claude agent brain</span>
+      <span class="badge kom">climbs · 1m LIDAR verified</span>
+      <span class="badge">conda</span>
+      <span class="badge">MIT</span>
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/fmasi/cycling-analysis-agent">View on GitHub →</a>
+      <a class="btn" href="https://www.linkedin.com/in/fmasi/">Frédéric Masi · LinkedIn</a>
+    </div>
+    <figure>
+      <img src="assets/hero-route-overview.png" alt="TdF-style route overview with 1m-LIDAR-verified climbs">
+      <figcaption>A real route, profiled — grade-coloured climbs, UCI categories, a KOM-points total, every gradient re-checked against 1&nbsp;m LIDAR.</figcaption>
+    </figure>
+  </header>
+
+  <section>
+    <h2>Why it exists</h2>
+    <p class="lead">I wanted a coach that knew two things most apps don't: the <b>physics</b> of my engine
+       (the legs — not the Brompton's motor) on each of my bikes, and the <b>real gradient</b> of the roads I ride.</p>
+    <p class="muted">TrainingPeaks knows my numbers; Strava knows the segments; neither knows the routing
+       engine flattened the 14% wall on Leith Hill into a polite 9%. So I built one. And because it's a
+       Claude agent, not a static plan, I just <em>talk</em> to it — “knee's grumbly, what should I do this
+       week?”, “I'm in France for 10 days, re-plan around these climbs.” Training plans assume your life
+       goes to plan. This one bends when it doesn't.</p>
+  </section>
+
+  <section>
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>🗣️ Talks like a coach</h3><p>Ask for the week's workouts, a route's pacing, or a return-from-injury plan — answered from your real data, not generic advice.</p></div>
+      <div class="card"><h3>🔁 Adaptive plans</h3><p>Injury, travel, a wrecked work week — it reshapes the block around what actually happened instead of guilt-tripping you.</p></div>
+      <div class="card"><h3>📊 Reads your rides</h3><p>Parses FIT: TSS/NP/IF, power curve, climbs, and a per-ride analysis written to disk.</p></div>
+      <div class="card"><h3>🗺️ Predicts your routes</h3><p>Speed &amp; duration at FTP/MAP/Z2/Z3 with honest uncertainty, a pacing narrative, and a fuelling plan.</p></div>
+      <div class="card"><h3>⛰️ 1m-LIDAR climbs</h3><p>Re-checks every climb against 1&nbsp;m elevation data so a flattened gradient doesn't wreck your pacing.</p></div>
+      <div class="card"><h3>📈 Training load</h3><p>CTL / ATL / TSB form forecasting on the TrainingPeaks lag-1 convention.</p></div>
+      <div class="card"><h3>🏔️ Climb categories</h3><p>UCI Cat 4 → HC with a Tour-de-France-scale KOM-points total per ride.</p></div>
+      <div class="card"><h3>🚲 Multi-bike + tyres</h3><p>The correct number of bikes is N+1 — and it knows the physics of all of them. Per-bike CdA/CRR/weight plus Silca-extrapolated pressures for your real front/rear split.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The clever bit — 1-metre LIDAR climb verification</h2>
+    <p class="lead">Routing engines and GPS smear elevation. On a Cat-3+ climb that's the difference
+       between “ride at threshold” and “blow up 200&nbsp;m from the top.”</p>
+    <p class="muted">For every climb it finds, the agent re-samples the road against <b>1&nbsp;m LIDAR DEM
+       tiles</b> (UK DEFRA, FR IGN), map-matched to the tarmac with OSRM, GPXZ fallback outside cached
+       tiles — then blends the hi-fi climbs back into the route profile.</p>
+    <figure>
+      <img src="assets/hifi-vs-gpx.png" alt="GPX vs 1m-LIDAR per climb: elevation and gradient with peak deltas" style="max-width:560px;display:block;margin:0 auto">
+      <figcaption>Every climb, GPX (grey) vs 1&nbsp;m-LIDAR (colour). On this route the router under-reported peak gradients by up to <b>8 percentage points</b> — a “6.5%” climb hiding a 14% wall.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>It's an agent, not a spreadsheet</h2>
+    <p class="muted">The repo ships a <code>CLAUDE.md</code> “brain” that any Claude Code-compatible
+       assistant auto-loads — the coaching workflows, the physics, the training-load definitions, the
+       conventions every script follows. It reads your profile, runs the scripts, and writes analyses
+       back to disk, updating your profile as a side effect of every conversation. Portable: it runs
+       standalone, or hosted in an OpenClaw workspace. You don't <em>need</em> the agent — every script
+       runs from the CLI — but it's what turns a box of tools into an everyday coach.</p>
+  </section>
+
+  <section>
+    <h2>What your coach actually says</h2>
+    <div class="card" style="border-left:4px solid var(--kom)">
+      <p style="margin:0 0 9px">💬 <b>“Shut up, legs.”</b> — when the data says you've got more in you.</p>
+      <p style="margin:0 0 9px">💬 <b>“It's not the bike. It's never the bike.”</b> — but I'll still nail your tyre pressure.</p>
+      <p style="margin:0 0 9px">💬 <b>“The correct number of bikes is N+1.”</b> — and I know the physics of all N.</p>
+      <p style="margin:0 0 9px">💬 <b>“Free speed is just aero you haven't bought yet.”</b> — and yes, I track your CdA.</p>
+      <p style="margin:0">💬 <b>“Don't blame the map.”</b> — I checked the gradient against 1&nbsp;m LIDAR. Blame the legs.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>See it think — example prediction</h2>
+    <table>
+      <tr><th>Climb</th><th>Length</th><th>Avg</th><th>Max</th><th>Cat</th><th>At FTP</th></tr>
+      <tr><td>Box Hill</td><td>2.5 km</td><td>5.0%</td><td>8%</td><td>Cat 3</td><td>16.5 km/h</td></tr>
+      <tr><td>Leith Hill</td><td>1.6 km</td><td>6.5%</td><td>11%</td><td>Cat 3</td><td>13.8 km/h</td></tr>
+      <tr><td>White Down</td><td>0.9 km</td><td>8.5%</td><td>14%</td><td>Cat 3</td><td>11.2 km/h</td></tr>
+    </table>
+    <blockquote>For the 11% pitch on Leith Hill: ~280&nbsp;W at 60&nbsp;rpm to clear in the lowest gear
+       (34×32 ≈ 10.5&nbsp;km/h). Fuelling: 54&nbsp;g carb/hr, one stop at km&nbsp;35. Pacing: first 20&nbsp;km
+       below 130&nbsp;W, then target FTP on the climbs.</blockquote>
+    <figure>
+      <img src="assets/climb-detail.png" alt="Per-climb hi-fi gradient profile, grade-coloured" style="max-width:680px;display:block;margin:18px auto 0">
+      <figcaption>Per-climb hi-fi detail — where the gradient actually bites, coloured by steepness.</figcaption>
+    </figure>
+  </section>
+
+  <footer>
+    Built by <a href="https://www.linkedin.com/in/fmasi/">Frédéric Masi</a> — AI agents, applied to the things I care about.<br>
+    More of my work: <a href="https://github.com/fmasi/parley">parley</a> (private on-device transcription) ·
+    <a href="https://github.com/fmasi/mailrag">mailrag</a> (private email RAG).<br>
+    Open source under <a href="https://github.com/fmasi/cycling-analysis-agent/blob/main/LICENSE">MIT</a>. © 2026 Frédéric Masi.
+  </footer>
+
+</div>
+<div class="dots"></div>
+</body>
+</html>
