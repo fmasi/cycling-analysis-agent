@@ -81,6 +81,8 @@ box of tools into an everyday coach.
 >
 > 💬 *"The correct number of bikes is N+1."* — and I know the physics of all N.
 >
+> 💬 *"Free speed is just aero you haven't bought yet."* — and yes, I track your CdA.
+>
 > 💬 *"Don't blame the map."* — I checked the gradient against 1 m LIDAR. Blame the legs.
 
 ## Quickstart
