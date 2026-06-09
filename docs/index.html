@@ -63,6 +63,7 @@
     <p class="tag">A Claude agent you host yourself — it reads your rides, predicts your routes, tracks
        your form, and verifies every climb against <b>1-metre LIDAR</b> so the pacing is actually right.
        A physicist's model with a <em>directeur sportif's</em> attitude.</p>
+    <p style="font-family:var(--mono);font-size:13px;color:var(--kom);margin:14px 0 0;font-weight:700">“Shut up, legs.” — your new coach, probably.</p>
     <div class="badges">
       <span class="badge">Python 3.11+</span>
       <span class="badge">Claude agent brain</span>
@@ -83,7 +84,7 @@
   <section>
     <h2>Why it exists</h2>
     <p class="lead">I wanted a coach that knew two things most apps don't: the <b>physics</b> of my engine
-       on my bikes, and the <b>real gradient</b> of the roads I ride.</p>
+       (the legs — not the Brompton's motor) on each of my bikes, and the <b>real gradient</b> of the roads I ride.</p>
     <p class="muted">TrainingPeaks knows my numbers; Strava knows the segments; neither knows the routing
        engine flattened the 14% wall on Leith Hill into a polite 9%. So I built one. And because it's a
        Claude agent, not a static plan, I just <em>talk</em> to it — “knee's grumbly, what should I do this
@@ -101,7 +102,7 @@
       <div class="card"><h3>⛰️ 1m-LIDAR climbs</h3><p>Re-checks every climb against 1&nbsp;m elevation data so a flattened gradient doesn't wreck your pacing.</p></div>
       <div class="card"><h3>📈 Training load</h3><p>CTL / ATL / TSB form forecasting on the TrainingPeaks lag-1 convention.</p></div>
       <div class="card"><h3>🏔️ Climb categories</h3><p>UCI Cat 4 → HC with a Tour-de-France-scale KOM-points total per ride.</p></div>
-      <div class="card"><h3>🚲 Multi-bike + tyres</h3><p>Per-bike physics profiles and Silca-extrapolated pressures for your real front/rear weight split.</p></div>
+      <div class="card"><h3>🚲 Multi-bike + tyres</h3><p>The correct number of bikes is N+1 — and it knows the physics of all of them. Per-bike CdA/CRR/weight plus Silca-extrapolated pressures for your real front/rear split.</p></div>
     </div>
   </section>
 
@@ -126,6 +127,16 @@
        back to disk, updating your profile as a side effect of every conversation. Portable: it runs
        standalone, or hosted in an OpenClaw workspace. You don't <em>need</em> the agent — every script
        runs from the CLI — but it's what turns a box of tools into an everyday coach.</p>
+  </section>
+
+  <section>
+    <h2>What your coach actually says</h2>
+    <div class="card" style="border-left:4px solid var(--kom)">
+      <p style="margin:0 0 9px">💬 <b>“Shut up, legs.”</b> — when the data says you've got more in you.</p>
+      <p style="margin:0 0 9px">💬 <b>“It's not the bike. It's never the bike.”</b> — but I'll still nail your tyre pressure.</p>
+      <p style="margin:0 0 9px">💬 <b>“The correct number of bikes is N+1.”</b> — and I know the physics of all N.</p>
+      <p style="margin:0">💬 <b>“Don't blame the map.”</b> — I checked the gradient against 1&nbsp;m LIDAR. Blame the legs.</p>
+    </div>
   </section>
 
   <section>

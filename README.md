@@ -18,7 +18,7 @@
 ## Why this exists
 
 I'm a self-coached rider, and I wanted a coach that actually knew two things most apps don't: the
-**physics** of *my* engine on *my* bikes, and the **real gradient** of the roads I ride. TrainingPeaks
+**physics** of *my* engine — the legs, not the Brompton's motor — on each of my bikes, and the **real gradient** of the roads I ride. TrainingPeaks
 knows my numbers; Strava knows the segments; neither knows that the routing engine flattened the 14%
 wall on Leith Hill into a polite 9%, or that I changed my position and dropped my CdA.
 
@@ -41,7 +41,7 @@ plan. This one bends when it doesn't.
   flattened gradient doesn't wreck your pacing — *the clever bit, below.*
 - **Training-load forecasting (CTL / ATL / TSB).** Projects form using TrainingPeaks' lag-1 convention.
 - **Climb categorisation.** UCI-style Cat 4 → HC with a Tour-de-France-scale KOM-points total per ride.
-- **Multiple bikes, real tyre pressures.** Per-bike physics profiles (road / gravel / aero — CdA, CRR,
+- **Multiple bikes (N+1, obviously).** Per-bike physics profiles (road / gravel / aero — CdA, CRR,
   weight) and Silca-extrapolated pressures for your actual front/rear weight split, not just the 50/50 preset.
 
 ## The clever bit — 1-metre LIDAR climb verification
@@ -72,6 +72,16 @@ runs standalone, or hosted inside an [OpenClaw](https://github.com/) workspace w
 
 You don't *need* the agent — every script runs standalone from the CLI. But the agent is what turns a
 box of tools into an everyday coach.
+
+### What your coach actually says
+
+> 💬 *"Shut up, legs."* — when the data says you've got more in you.
+>
+> 💬 *"It's not the bike. It's never the bike."* — but I'll still nail your tyre pressure.
+>
+> 💬 *"The correct number of bikes is N+1."* — and I know the physics of all N.
+>
+> 💬 *"Don't blame the map."* — I checked the gradient against 1 m LIDAR. Blame the legs.
 
 ## Quickstart
 
