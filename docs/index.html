@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>cycling-analysis-agent — an AI cycling coach you host yourself</title>
 <meta name="description" content="An AI cycling coach you host yourself: reads your rides, predicts your routes, tracks your form, and verifies every climb against 1-metre LIDAR. A Claude agent with a directeur sportif's attitude.">
 <style>
@@ -51,6 +52,19 @@
   th{color:var(--muted);font-size:12.5px;text-transform:uppercase;letter-spacing:.05em}
   code{font-family:var(--mono);background:#f3efe6;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:13px}
   footer{padding:36px 0 64px;border-top:1px solid var(--line);color:var(--muted);font-size:14.5px}
+  /* dark mode — warm charcoal (keeps the warm feel), brighter KOM accents; placed last to override the light rules above */
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#16130d; --panel:#211d15; --ink:#f2ede3; --muted:#a89f8f; --ink2:#d8d0c2;
+      --line:#332d22; --kom:#ff4d5e; --kom-dark:#ff8a93;
+      --g1:#5cc46a; --g2:#ffb347; --g3:#ff5a4d;
+    }
+    body{background-image:repeating-linear-gradient(0deg,transparent,transparent 38px,rgba(220,210,190,.045) 38px,rgba(220,210,190,.045) 39px)}
+    blockquote{background:var(--panel)}
+    table{background:var(--panel)}
+    code{background:#2a2419}
+    figure img{background:var(--panel)}
+  }
 </style>
 </head>
 <body>
