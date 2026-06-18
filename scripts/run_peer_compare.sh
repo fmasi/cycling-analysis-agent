@@ -35,13 +35,14 @@ if [ -z "$PEER_NAME" ] || [ -z "$PEER_FIT" ]; then
   echo "" >&2
   echo "Registered peers:" >&2
   # Resolve the scripts/ dir as an absolute path so this works regardless of CWD.
-  "$PYBIN" -c "
+  # Quoted heredoc + argv so the repo path can't break/inject into the source.
+  "$PYBIN" - "$REPO_ROOT" >&2 <<'PY' || echo "  (could not load registry)" >&2
 import sys
-sys.path.insert(0, '$REPO_ROOT/scripts')
+sys.path.insert(0, sys.argv[1] + '/scripts')
 from profile import list_peers
 peers = list_peers()
 print('  ' + (', '.join(peers) if peers else '(none registered)'))
-" >&2 || echo "  (could not load registry)" >&2
+PY
   exit 64
 fi
 
@@ -56,11 +57,11 @@ cd "$REPO_ROOT"
 # Strategy: read peer FIT's session start date, find rider FIT with same date
 # prefix (rides/fit/<YYYY-MM-DD>-*.fit), else fall back to most recent.
 RIDER_FIT="$(
-  "$PYBIN" - <<PY
-import sys, glob, re
+  "$PYBIN" - "$PEER_FIT" <<'PY'
+import sys, glob
 sys.path.insert(0, 'scripts')
 from analyse_fit import parse_fit
-sess, _, _ = parse_fit("$PEER_FIT")
+sess, _, _ = parse_fit(sys.argv[1])   # path via argv, not source interpolation
 start = sess.get("start_time") or sess.get("timestamp")
 date_prefix = start.strftime("%Y-%m-%d") if start else None
 candidates = sorted(glob.glob("rides/fit/*.fit"))

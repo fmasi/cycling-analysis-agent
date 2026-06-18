@@ -168,8 +168,8 @@ def detect_flat_segments(arr: dict, min_duration_s: int = 60,
     Grade is computed from altitude over a 50m sliding window, NOT the
     instantaneous grade field (which is noisy on FIT records).
     """
-    d = arr["distance_m"]
-    e = arr["altitude_m"]
+    d = arr.get("distance_m")
+    e = arr.get("altitude_m")
     if d is None or e is None or len(d) < 100:
         return []
     # 50m window grade
@@ -206,10 +206,12 @@ def detect_flat_attacks(arr: dict, ftp_w: float, threshold_pct: float = 120,
                         min_duration_s: int = 15, max_grade_pct: float = 2.0
                         ) -> list[dict]:
     """Surges on flat: power > threshold_pct * FTP, grade |<2%|, ≥15s."""
-    d = arr["distance_m"]
+    d = arr.get("distance_m")
     p = arr.get("power_w")
-    e = arr["altitude_m"]
-    if p is None or len(p) < 100:
+    e = arr.get("altitude_m")
+    # Power-only / no-baro FITs lack altitude; a zero/blank FTP would make the
+    # surge threshold 0 and flag every sample. Bail cleanly in both cases.
+    if p is None or d is None or e is None or len(p) < 100 or ftp_w <= 0:
         return []
     n = len(d)
     grad = np.zeros(n)
@@ -791,10 +793,12 @@ def main() -> int:
     md.append(f"| {r2.label} | {r2.session.get('normalized_power')} W | "
               f"{r2.session.get('avg_heart_rate')} bpm | **{ef2:.2f}** |")
     md.append("")
+    ef_delta = f"{ef2-ef1:+.2f}"
+    ef_pct = f" ({(ef2/ef1-1)*100:+.0f}%)" if ef1 > 0 else ""
     md.append(f"_EF is a clean aerobic-fitness proxy: higher = more power per "
               f"heartbeat. A trained endurance cyclist typically sits 1.20–1.50; "
-              f"developing aerobic base sits 0.85–1.10. **Delta: {ef2-ef1:+.2f} "
-              f"({(ef2/ef1-1)*100:+.0f}%).**_")
+              f"developing aerobic base sits 0.85–1.10. **Delta: {ef_delta}"
+              f"{ef_pct}.**_")
     md.append("")
 
     # Time-in-zones
