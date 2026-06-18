@@ -12,6 +12,7 @@ dependencies:
   - requests>=2.31
   - py7zr>=0.21
   - pyshp>=2.3
+  - pyyaml>=6.0
   - pytest>=7.4
   - pip
   - pip:

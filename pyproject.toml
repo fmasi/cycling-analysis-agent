@@ -1,0 +1,8 @@
+# Tooling config. The project ships its runtime deps via environment.yml
+# (conda); this file only configures pytest.
+[tool.pytest.ini_options]
+testpaths = ["scripts/_tests"]
+# Put scripts/ on sys.path so tests can `import profile`, `import bike_config`,
+# etc. without a per-file sys.path.insert hack.
+pythonpath = ["scripts"]
+addopts = "-q"

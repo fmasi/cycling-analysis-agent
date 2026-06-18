@@ -25,13 +25,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from profile import (  # noqa: E402
-    SYSTEM_WEIGHT_KG,
-    FR_SPLIT_FRONT_PCT,
-    DEFAULT_BIKE,
-    bike_physics,
-    list_bikes,
-)
+from profile import SYSTEM_WEIGHT_KG, FR_SPLIT_FRONT_PCT, DEFAULT_BIKE  # noqa: E402
+from bike_config import load_bike, list_bikes, UnknownBikeError  # noqa: E402
 
 
 # Silca baselines at 90 kg, 31mm tyre, mid-range tubeless/latex, moderate group ride.
@@ -104,14 +99,12 @@ def main():
     system_weight = SYSTEM_WEIGHT_KG
     front_pct = FR_SPLIT_FRONT_PCT
     if args.bike:
-        bp = bike_physics(args.bike)
-        if bp is None:
-            parser.error(
-                f"unknown bike '{args.bike}'. "
-                f"Registered: {', '.join(list_bikes()) or 'none'}"
-            )
-        system_weight = bp['system_weight_kg']
-        front_pct = bp['fr_split_front_pct']
+        try:
+            bike = load_bike(args.bike)
+        except UnknownBikeError as exc:
+            parser.error(str(exc))
+        system_weight = bike.system_weight_kg_default
+        front_pct = bike.fr_split_front_pct
     if args.system_weight is not None:
         system_weight = args.system_weight
     if args.front_pct is not None:
