@@ -15,6 +15,7 @@ scripts/profile.py. Override on the command line for one-off calculations.
 Usage:
     python scripts/tyre_pressure.py
     python scripts/tyre_pressure.py --system-weight 90.1 --front-pct 40
+    python scripts/tyre_pressure.py --bike brompton_g
     python scripts/tyre_pressure.py --surface worn
     python scripts/tyre_pressure.py --surface poor
 """
@@ -24,7 +25,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from profile import SYSTEM_WEIGHT_KG, FR_SPLIT_FRONT_PCT  # noqa: E402
+from profile import (  # noqa: E402
+    SYSTEM_WEIGHT_KG,
+    FR_SPLIT_FRONT_PCT,
+    DEFAULT_BIKE,
+    bike_physics,
+    list_bikes,
+)
 
 
 # Silca baselines at 90 kg, 31mm tyre, mid-range tubeless/latex, moderate group ride.
@@ -77,18 +84,42 @@ def all_surfaces(front_pct=SILCA_REFERENCE_FRONT_PCT, system_kg=SYSTEM_WEIGHT_KG
 def main():
     parser = argparse.ArgumentParser(
         description='Tyre pressure calculator (Silca-extrapolated)')
-    parser.add_argument('--system-weight', type=float, default=SYSTEM_WEIGHT_KG,
+    # Defaults stay None so we can tell an explicit override from a fallback:
+    # explicit flag > --bike > active-bike profile default.
+    parser.add_argument('--system-weight', type=float, default=None,
                         help=f'System weight in kg (default from profile: {SYSTEM_WEIGHT_KG})')
-    parser.add_argument('--front-pct', type=float, default=FR_SPLIT_FRONT_PCT,
+    parser.add_argument('--front-pct', type=float, default=None,
                         help=f'Front wheel weight percentage (default from profile: {FR_SPLIT_FRONT_PCT})')
+    parser.add_argument('--bike', default=None,
+                        help='Use a specific bike from the profile (e.g. brompton_g) '
+                             f'instead of the default ({DEFAULT_BIKE}). '
+                             f'Registered: {", ".join(list_bikes()) or "none"}')
     parser.add_argument('--surface', choices=['new', 'worn', 'poor', 'all'],
                         default='all',
                         help='Surface condition (default: all)')
     args = parser.parse_args()
 
+    # Resolve system weight + F/R split. Start from the active-bike profile
+    # defaults, let --bike retarget, and let explicit flags win over both.
+    system_weight = SYSTEM_WEIGHT_KG
+    front_pct = FR_SPLIT_FRONT_PCT
+    if args.bike:
+        bp = bike_physics(args.bike)
+        if bp is None:
+            parser.error(
+                f"unknown bike '{args.bike}'. "
+                f"Registered: {', '.join(list_bikes()) or 'none'}"
+            )
+        system_weight = bp['system_weight_kg']
+        front_pct = bp['fr_split_front_pct']
+    if args.system_weight is not None:
+        system_weight = args.system_weight
+    if args.front_pct is not None:
+        front_pct = args.front_pct
+
     print('Tyre pressure targets')
-    print(f'  System weight: {args.system_weight} kg')
-    print(f'  F/R split:     {args.front_pct:.0f}/{100-args.front_pct:.0f}')
+    print(f'  System weight: {system_weight} kg')
+    print(f'  F/R split:     {front_pct:.0f}/{100-front_pct:.0f}')
     print()
     print(f"{'Surface':<35} {'Front':>6} {'Rear':>6}  {'Delta':>6}")
     print('-' * 60)
@@ -100,7 +131,7 @@ def main():
     }
     surfaces = ['new', 'worn', 'poor'] if args.surface == 'all' else [args.surface]
     for s in surfaces:
-        f, r = pressures_at_split(s, args.front_pct, actual_kg=args.system_weight)
+        f, r = pressures_at_split(s, front_pct, actual_kg=system_weight)
         delta = r - f
         print(f"{surface_names[s]:<35} {int(f):>4} psi {int(r):>4} psi  {int(delta):>4} psi")
 

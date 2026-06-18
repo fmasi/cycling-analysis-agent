@@ -43,8 +43,14 @@ profile.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
+
+
+def _warn(message: str) -> None:
+    """Emit a non-fatal warning to stderr (keeps stdout clean for callers)."""
+    print(f"[profile] warning: {message}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +167,146 @@ def _parse_simple_yaml(text: str) -> dict[str, Any]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Active-bike resolution
+#
+# The profile schema keeps per-bike physics under a nested `bikes:` block and
+# names the active one with a top-level `default_bike:` scalar, e.g.
+#
+#     default_bike: tripster
+#     bikes:
+#       tripster:
+#         system_weight_kg_default: 92.1
+#         fr_split: "40/60"
+#         bike_weight_kg: 11.6
+#         ...
+#
+# The flat `_parse_simple_yaml` parser can't read that nesting, so we extract
+# the active bike's physics here and fold it into the `physics` section. Older
+# profiles that still carry a flat top-level `physics:` block keep working
+# unchanged (no `default_bike`/`bikes` → nothing to fold in).
+# ---------------------------------------------------------------------------
+
+# bike key -> physics key it populates (all simple depth-2 scalars on the bike)
+_BIKE_TO_PHYSICS = {
+    "system_weight_kg_default": "system_weight_kg",
+    "bike_weight_kg": "bike_weight_kg",
+    "cda": "cda",
+    "drivetrain_efficiency": "drivetrain_efficiency",
+    "wheel_circ_m": "wheel_circ_m",
+}
+
+
+def _parse_top_scalar(text: str, name: str) -> Any:
+    """Return the value of a top-level (unindented) `name: value` scalar."""
+    prefix = f"{name}:"
+    for line in text.splitlines():
+        if not line.startswith((" ", "\t")) and line.strip().startswith(prefix):
+            _, _, val = line.partition(":")
+            return _coerce_scalar(val)
+    return None
+
+
+def _parse_bikes(text: str) -> dict[str, dict[str, Any]]:
+    """Parse the nested `bikes:` block into {bike_name: {key: scalar}}.
+
+    Only each bike's *immediate* scalar children are captured — enough for
+    physics resolution. Deeper structure (tyres, gearing, crr_by_surface,
+    block scalars) is intentionally skipped; it lives at a deeper indent and
+    is never read here.
+    """
+    bikes: dict[str, dict[str, Any]] = {}
+    in_bikes = False
+    bike_indent: int | None = None
+    child_indent: int | None = None
+    current: str | None = None
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        stripped = raw.strip()
+        if not in_bikes:
+            if indent == 0 and stripped == "bikes:":
+                in_bikes = True
+            continue
+        if indent == 0:
+            break  # a new top-level key ends the bikes block
+        if bike_indent is None:
+            bike_indent = indent
+        if indent == bike_indent and stripped.endswith(":"):
+            current = stripped[:-1].strip()
+            bikes[current] = {}
+            child_indent = None
+            continue
+        if current is None:
+            continue
+        if child_indent is None:
+            child_indent = indent  # first child fixes the immediate-child level
+        if indent == child_indent and ":" in stripped:
+            key, _, val = stripped.partition(":")
+            coerced = _coerce_scalar(val)
+            if coerced is not None:
+                bikes[current][key.strip()] = coerced
+        # indent > child_indent → nested sub-block, skip
+    return bikes
+
+
+def _parse_fr_split(raw: Any) -> float | None:
+    """Parse a front/rear weight split into the front-share percent.
+
+    Accepts the canonical `"40/60"` string (-> 40.0) or a bare number.
+    Returns None when it can't be parsed.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*/\s*\d+(?:\.\d+)?\s*$", s)
+    if m:
+        return float(m.group(1))
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _bike_to_physics(
+    bike: dict[str, Any], base_physics: dict[str, Any], bike_name: str = ""
+) -> dict[str, Any]:
+    """Resolve a bike's physics into a full physics dict.
+
+    Starts from `base_physics` (the generic defaults) and overrides each key
+    the bike defines. Missing essentials (system weight, F/R split) warn and
+    keep the default, so callers always get a complete, sane physics dict.
+    """
+    phys = dict(base_physics)
+    label = f"bike '{bike_name}'" if bike_name else "bike"
+
+    if bike.get("system_weight_kg_default") is None:
+        _warn(
+            f"{label} has no system_weight_kg_default; "
+            f"using default {phys['system_weight_kg']} kg"
+        )
+    if bike.get("fr_split") is None:
+        _warn(
+            f"{label} has no fr_split; "
+            f"using default {phys['fr_split_front_pct']}% front"
+        )
+
+    for src, dst in _BIKE_TO_PHYSICS.items():
+        if bike.get(src) is not None:
+            phys[dst] = float(bike[src])
+
+    front = _parse_fr_split(bike.get("fr_split"))
+    if front is not None:
+        phys["fr_split_front_pct"] = front
+    elif bike.get("fr_split") is not None:
+        _warn(
+            f"{label} fr_split={bike['fr_split']!r} is unparseable; "
+            f"using default {phys['fr_split_front_pct']}% front"
+        )
+    return phys
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Shallow-section, shallow-key merge — override wins per key."""
     merged: dict[str, Any] = {k: dict(v) for k, v in base.items()}
@@ -207,8 +353,29 @@ def load_profile() -> dict[str, Any]:
     match = _FRONTMATTER_RE.match(text)
     if not match:
         return _deep_merge(DEFAULTS, {})
-    parsed = _parse_simple_yaml(match.group("body"))
-    return _deep_merge(DEFAULTS, parsed)
+    body = match.group("body")
+    parsed = _parse_simple_yaml(body)
+    merged = _deep_merge(DEFAULTS, parsed)
+
+    # Resolve the active bike (nested `bikes:` + `default_bike:`) and fold its
+    # physics into the `physics` section. The flat parser can't read the
+    # nesting, so do it explicitly here. Profiles without a `bikes:` block
+    # (e.g. the example file's flat `physics:`) skip this untouched.
+    default_bike = _parse_top_scalar(body, "default_bike")
+    bikes = _parse_bikes(body)
+    merged["default_bike"] = default_bike
+    merged["bikes"] = bikes
+    if default_bike:
+        if default_bike in bikes:
+            merged["physics"] = _bike_to_physics(
+                bikes[default_bike], merged["physics"], default_bike
+            )
+        else:
+            _warn(
+                f"default_bike={default_bike!r} not found in bikes: "
+                f"{sorted(bikes) or 'none'}; using physics defaults"
+            )
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +407,10 @@ GRAVITY: float = float(_p["physics"]["gravity_m_s2"])
 WHEEL_CIRCUMFERENCE_M: float = float(_p["physics"]["wheel_circ_m"])
 FR_SPLIT_FRONT_PCT: float = float(_p["physics"]["fr_split_front_pct"])
 
+# Name of the active bike whose physics back the constants above (or None when
+# the profile uses a flat `physics:` block instead of a `bikes:` registry).
+DEFAULT_BIKE: str | None = _p.get("default_bike")
+
 
 def power_zone_bounds() -> list[tuple[str, int, int]]:
     """Materialise the eight power zones for this profile's FTP/MAP/AC/NM.
@@ -260,6 +431,69 @@ def power_zone_bounds() -> list[tuple[str, int, int]]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Riding-partner registry helpers
+#
+# Peers live in USER_PROFILE.md frontmatter as flat 2-level sections named
+# `peer_<name>:` (e.g. `peer_thomas:`). Mirrors the existing 2-level YAML
+# convention so the same parser works.
+# ---------------------------------------------------------------------------
+
+
+def load_bike(name: str) -> dict[str, Any] | None:
+    """Return the raw config dict for bike `name`, or None if not registered.
+
+    Lets callers target a specific bike (e.g. the Brompton) without changing
+    the default. Keys are the bike's immediate scalar fields as written in the
+    profile (`system_weight_kg_default`, `fr_split`, `bike_weight_kg`, ...).
+    """
+    bikes = _p.get("bikes") or {}
+    cfg = bikes.get(name)
+    return dict(cfg) if cfg else None
+
+
+def bike_physics(name: str) -> dict[str, Any] | None:
+    """Return the fully-resolved physics dict for bike `name`, or None.
+
+    Same shape as `load_profile()["physics"]` — every physics key present,
+    bike values overriding the generic defaults. Use for one-off targeting of
+    a non-default bike (e.g. tyre-pressure for the Brompton).
+    """
+    bike = load_bike(name)
+    if bike is None:
+        return None
+    return _bike_to_physics(bike, DEFAULTS["physics"], name)
+
+
+def list_bikes() -> list[str]:
+    """Return registered bike names from the profile's `bikes:` block."""
+    return sorted((_p.get("bikes") or {}).keys())
+
+
+def load_peer(name: str) -> dict[str, Any] | None:
+    """Return the config dict for peer `<name>`, or None if not registered.
+
+    Looks up `peer_<name>` in the loaded profile. Returns None when the peer
+    isn't in the registry — caller can fall back to CLI flags.
+
+    Usage:
+        from profile import load_peer
+        cfg = load_peer("thomas")
+        if cfg:
+            ftp = int(cfg.get("ftp_w", 200))
+    """
+    key = f"peer_{name.lower()}"
+    cfg = _p.get(key)
+    return dict(cfg) if cfg else None
+
+
+def list_peers() -> list[str]:
+    """Return registered peer short names (without the `peer_` prefix)."""
+    return sorted(
+        k[len("peer_"):] for k in _p.keys() if k.startswith("peer_")
+    )
+
+
 if __name__ == "__main__":
     import json
     print("Loaded profile (with defaults filled in):")
@@ -267,3 +501,6 @@ if __name__ == "__main__":
     print("\nMaterialised power zones (W):")
     for name, lo, hi in power_zone_bounds():
         print(f"  {name:<18} {lo:>4} – {hi:<4}")
+    peers = list_peers()
+    if peers:
+        print(f"\nRegistered peers ({len(peers)}): {', '.join(peers)}")
