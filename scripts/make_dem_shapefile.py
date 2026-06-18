@@ -26,16 +26,8 @@ import shapefile  # pyshp
 from pyproj import CRS, Transformer
 
 
-def bbox_from_gpx(path: Path) -> tuple[float, float, float, float]:
-    tree = ET.parse(str(path))
-    root = tree.getroot()
-    ns = {"g": root.tag.split("}")[0].strip("{")}
-    pts = root.findall(".//g:trkpt", ns)
-    if not pts:
-        raise SystemExit(f"No trackpoints in {path}")
-    lats = [float(p.attrib["lat"]) for p in pts]
-    lons = [float(p.attrib["lon"]) for p in pts]
-    return (min(lons), min(lats), max(lons), max(lats))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from geo_util import bbox_from_gpx  # noqa: E402,F401  (shared; re-exported)
 
 
 def wgs84_bbox_to_osgb_polygon(
