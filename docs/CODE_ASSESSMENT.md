@@ -55,9 +55,37 @@ _~7,600 lines across 23 scripts. Tests cover the verifier/DEM subsystem well; th
 - **FIT/GPX (P3):** extract NP/TSS/peak-power as pure functions, test on synthetic series.
 - **CI:** minimal GitHub Actions — build env from `environment.yml`, run `pytest scripts/_tests`. Suite is fully hermetic (no network/real-DEM/real-profile once P2 lands).
 
-## Execution phases
-- **P0 — safety + infra:** commit untracked framework scripts; add pyproject pytest config + smoke test.
-- **P1 — salvage foundation:** lazy `profile.py`; port `bike_config.py`; replace band-aid; fix block-scalar parser; synthetic-profile fixture + loader/bike tests.
-- **P2 — correctness fixes w/ tests:** local_dem half-pixel, estimate_tss clamp+range, predict_climb de-hardcode, zone_for_power/descent, compare_riders hardening, shell-injection, DEM-miss flagging.
-- **P3 — dedup/refactor:** climb_detect, power_metrics, geo_util; split verify_climbs; computation/markdown separation.
-- **P4 — CI + coverage expansion.**
+## Execution phases — STATUS (2026-06-19)
+
+- **P0 — safety + infra ✅** untracked framework scripts committed; `pyproject.toml`
+  pytest config (testpaths + pythonpath); smoke-import test over all modules.
+- **P1 — salvage foundation ✅** PyYAML loader (deleted 3 hand-rolled parsers +
+  their bug class), side-effect-free lazy import, typed `bike_config.py` ported
+  from the branch, band-aid replaced, fresh-clone example-comment bug fixed,
+  `USER_PROFILE.example.md` documents the bikes schema, synthetic-profile fixture
+  + loader/bike tests.
+- **P2 — correctness fixes w/ tests ✅** zone_for_power Sweet-Spot reachable +
+  descent cap; local_dem half-pixel; estimate_tss negative-flat clamp;
+  predict_climb de-hardcoded keys; compare_riders no-altitude/zero-FTP/EF guards;
+  run_peer_compare.sh heredoc injection; elevation_fallback length check;
+  verify_climbs DEM-miss → unverified flag.
+- **P3 — dedup/refactor ✅ (partial)** extracted `climb_detect.py` (killed 4×
+  duplication of find_climbs/compute_max_grade/median_filter/smooth) and
+  `geo_util.py` (haversine + bbox); GPX missing-`<ele>` now interpolates.
+- **P4 — CI ✅** GitHub Actions workflow builds the env and runs the hermetic suite.
+
+Test count: **56 → 120**.
+
+### Deferred (with rationale)
+- **power_metrics extraction** — compare_riders reimplements analyse_fit's
+  NP/VI/zones/peak-power "by hand"; they may not be byte-identical, so unifying
+  needs a characterization/equivalence pass against real FITs (not in-repo, all
+  gitignored) before it's safe. Higher risk than current value.
+- **Splitting verify_climbs.py (1253 LoC)** into grade_analysis / dem_sampling /
+  profile_stitch / report_embed — organizational; the module is well-tested
+  (32 tests) and stable. Defer to avoid churn without a correctness payoff.
+- **Computation/markdown separation** in the analyse_* renderers — broad, and
+  the highest-value pure functions (estimate_tss, predict_climb, climb_detect)
+  are already extracted + tested.
+- **NP 30 s rolling-average** in analyse_climbs (currently a 4th-power mean,
+  mislabelled) and the loop-detection latitude dependence — LOW severity.

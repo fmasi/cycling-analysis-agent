@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Login shell so the micromamba-activated `cycling` env is on PATH.
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up the cycling conda env
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+
+      - name: Run test suite
+        # Hermetic: no network, no real DEM tiles, no real USER_PROFILE.md.
+        run: pytest scripts/_tests -q
