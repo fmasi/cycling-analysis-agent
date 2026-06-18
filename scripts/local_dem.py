@@ -43,7 +43,11 @@ class LocalDEM:
         # Use the affine transform inverse to get fractional row/col reliably
         # across rasterio versions (some don't accept op=float on .index()).
         col_f, row_f = ~ds.transform * (x, y)
-        row, col = row_f, col_f
+        # The affine maps integer (col,row) to a pixel's upper-left CORNER, so
+        # pixel (r,c)'s centre sits at (c+0.5, r+0.5). Shift by -0.5 so the
+        # bilinear weights interpolate between pixel CENTRES; without this every
+        # sample is offset half a pixel (biases peak-gradient on steep walls).
+        row, col = row_f - 0.5, col_f - 0.5
         r0, c0 = int(np.floor(row)), int(np.floor(col))
         r1, c1 = r0 + 1, c0 + 1
         if r0 < 0 or c0 < 0 or r1 >= ds.height or c1 >= ds.width:
