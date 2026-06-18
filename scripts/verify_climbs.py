@@ -307,14 +307,17 @@ def _verify_one_climb(
         # Linear-interpolate remaining gaps from nearest valid neighbours.
         valid_idx = [i for i, e in enumerate(elevs) if e is not None]
         if not valid_idx:
-            # Total miss — return a zeroed verification so the run continues.
+            # Total miss — no DEM coverage and no fallback. Flag as unverified
+            # (NaN peak/delta) so the report renders "(unverified)" and the
+            # verdict reflects the gap, rather than a benign 0.0% / large
+            # negative delta that reads as "flat & safe".
             return ClimbVerification(
                 name=f"km {climb['start_km']:.2f}",
                 km_start=float(climb["start_km"]),
                 km_end=float(climb["end_km"]),
                 gpx_peak_pct=float(climb.get("max_grad_pct", 0.0)),
-                verified_peak_pct=0.0,
-                delta_pp=0.0,
+                verified_peak_pct=float("nan"),
+                delta_pp=float("nan"),
                 length_above_8=0.0,
                 length_above_10=0.0,
                 length_above_12=0.0,
@@ -596,8 +599,11 @@ def verify_route(gpx_path: Path, dem, fallback=None) -> FidelityReport:
         lats, lons, dists, climbs, dem, fallback=fallback, presampled=presampled,
     )
 
-    deltas = [v.delta_pp for v in verifications]
-    verdict = classify_verdict(deltas, missed=len(missed))
+    # Drop unverified (NaN) deltas from the verdict math, but count them as
+    # gaps so an uncovered declared climb pushes the verdict to "high".
+    deltas = [v.delta_pp for v in verifications if not math.isnan(v.delta_pp)]
+    n_unverified = sum(1 for v in verifications if math.isnan(v.verified_peak_pct))
+    verdict = classify_verdict(deltas, missed=len(missed) + n_unverified)
 
     # Pick baseline for the stitched profile: full-route DEM samples when
     # coverage is solid, GPX altitudes otherwise. Climb fine-resamples
@@ -863,6 +869,12 @@ def render_report(report: FidelityReport) -> str:
         for cv in report.missed_climbs:
             # gpx_peak_pct here holds the coarse-pass peak (seeded by
             # detect_missed_climbs from the 100m-window scan).
+            if math.isnan(cv.verified_peak_pct):
+                lines.append(
+                    f"| {cv.km_start:.2f} | {cv.gpx_peak_pct:.1f}% | "
+                    "(unverified) | — |"
+                )
+                continue
             lines.append(
                 f"| {cv.km_start:.2f} | {cv.gpx_peak_pct:.1f}% | "
                 f"**{cv.verified_peak_pct:.1f}%** | "

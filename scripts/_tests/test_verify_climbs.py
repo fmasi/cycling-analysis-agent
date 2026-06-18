@@ -246,6 +246,33 @@ def test_detect_missed_climbs_returns_ClimbVerification_with_fine_peak(tmp_path)
     assert hidden.mean_max["peak_100m"] >= 6.0
 
 
+def test_classify_verdict_flags_missed_as_high():
+    from verify_climbs import classify_verdict
+    assert classify_verdict([0.2, 0.5], missed=0) == "safe"
+    assert classify_verdict([1.5], missed=0) == "minor"
+    assert classify_verdict([3.0], missed=0) == "high"
+    # An unverified (coverage-gap) climb is passed as a "missed" count → high.
+    assert classify_verdict([], missed=1) == "high"
+
+
+def test_render_report_marks_unverified_climb():
+    # A total DEM-miss climb carries NaN peak/delta; it must render
+    # "(unverified)", never a benign 0.0%/large-negative-delta row.
+    cv = ClimbVerification(
+        name="C1", km_start=12.0, km_end=13.0,
+        gpx_peak_pct=9.0, verified_peak_pct=float("nan"), delta_pp=float("nan"),
+        length_above_8=0.0, length_above_10=0.0, length_above_12=0.0,
+        length_above_14=0.0, fallback_used=False,
+    )
+    report = FidelityReport(
+        route_name="t", backend="local-dem", coverage_pct=10.0,
+        climbs=[cv], missed_climbs=[], verdict="high",
+    )
+    txt = render_report(report)
+    assert "(unverified)" in txt
+    assert "0.0%" not in txt.split("Per-climb")[1].split("###")[0]  # no fake 0% row
+
+
 def test_render_report_includes_verified_pacing_when_present():
     cv = ClimbVerification(
         name="C1", km_start=7.0, km_end=8.5,

@@ -56,5 +56,13 @@ class GPXZClient:
             if r.status_code != 200:
                 raise RuntimeError(f"GPXZ HTTP {r.status_code}: {r.text[:200]}")
             data = r.json()
-            out.extend(p["elevation"] for p in data["results"])
+            results = data.get("results")
+            # A reordered/short response would silently misassign elevations to
+            # the wrong coordinates; refuse rather than corrupt the profile.
+            if not isinstance(results, list) or len(results) != len(chunk):
+                got = len(results) if isinstance(results, list) else "no"
+                raise RuntimeError(
+                    f"GPXZ returned {got} elevations for {len(chunk)} points"
+                )
+            out.extend(p["elevation"] for p in results)
         return out
