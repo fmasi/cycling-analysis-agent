@@ -54,6 +54,22 @@ training_load:
   tsb: 0                          # Training Stress Balance — yesterday CTL − yesterday ATL
   source: <e.g. "TrainingPeaks AM YYYY-MM-DD">
 
+# Riding-partner (peer) registry — flat `peer_<lowername>:` sections,
+# consumed by scripts/profile.py:load_peer() and scripts/run_peer_compare.sh
+# (the rider-vs-peer FIT comparison wrapper). Add one block per peer.
+# Qualitative notes (style, strengths, planning rules) live in the
+# "Riding partners" section in the markdown body below.
+# Example block:
+#
+# peer_<name>:
+#   label: <Display name>
+#   ftp_w: 200                    # Your best calibrated estimate of their FTP
+#   ftp_w_stored: 220             # Optional — what their head unit reports
+#   ftp_source: garmin-auto       # test | garmin-auto | self-declared | unknown
+#   weight_kg: 75                 # Estimated; used for W/kg comparisons
+#   bike_summary: "<one-line bike spec relevant to riding-together comparisons>"
+#   last_compared_ride: "<YYYY-MM-DD short route name>"
+
 goals:
   primary_event: <Event name>
   primary_date: YYYY-MM-DD
