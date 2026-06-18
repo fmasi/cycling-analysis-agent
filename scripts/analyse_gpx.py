@@ -22,7 +22,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from physics_model import (
-    FTP, MAP_WORKING, predict_speed, vam_at_power,
+    FTP, MAP_WORKING, AC_FRESH_EST, predict_speed, vam_at_power,
     power_for_60rpm_in_lowest_gear, SYSTEM_WEIGHT_KG,
     speed_at_cadence_rpm
 )
@@ -187,11 +187,24 @@ def predict_climb(climb):
     length_km = climb['length_m'] / 1000
     out = {}
 
-    for label, power in [('FTP_171', FTP), ('MAP_210', MAP_WORKING),
-                          ('Z3_130', 130), ('Z2_110', 110)]:
+    # Power targets derived from the profile (never hardcode FTP/MAP into keys
+    # or labels — they desync the moment the rider re-tests). Stable keys
+    # ('ftp','map','z3','z2'); the watts + display label travel with the value.
+    z3_w, z2_w = round(0.80 * FTP), round(0.65 * FTP)
+    out['powers'] = {}
+    for key, power, label in [
+        ('ftp', FTP, f'FTP ({FTP}W)'),
+        ('map', MAP_WORKING, f'MAP ({MAP_WORKING}W)'),
+        ('z3', z3_w, f'Z3 ({z3_w}W)'),
+        ('z2', z2_w, f'Z2 ({z2_w}W)'),
+    ]:
         speed = predict_speed(power, grad)
-        out[f'speed_kmh_{label}'] = round(speed, 2)
-        out[f'time_min_{label}'] = round(length_km / speed * 60, 1) if speed > 0 else None
+        out['powers'][key] = {
+            'w': power,
+            'label': label,
+            'speed_kmh': round(speed, 2),
+            'time_min': round(length_km / speed * 60, 1) if speed > 0 else None,
+        }
 
     out['vam_at_ftp_mh'] = round(vam_at_power(FTP, grad), 0)
     # Survival check at max grade
@@ -199,16 +212,18 @@ def predict_climb(climb):
         out['power_for_60rpm_at_max_grad_w'] = round(
             power_for_60rpm_in_lowest_gear(climb['max_grad_pct']), 0)
 
-    # Pacing intent based on duration
+    # Pacing intent based on duration — bounds derived from FTP/MAP/AC.
     time_at_ftp = length_km / predict_speed(FTP, grad) * 60
     if time_at_ftp < 3:
-        intent = 'AC zone (sub-3min) — push hard up to 250W'
+        intent = f'AC zone (sub-3min) — push hard up to ~{AC_FRESH_EST}W'
     elif time_at_ftp <= 8:
-        intent = 'MAP zone (3-8min) — primary development zone, target 172-210W'
+        intent = (f'MAP zone (3-8min) — primary development zone, '
+                  f'target {FTP}-{MAP_WORKING}W')
     elif time_at_ftp <= 20:
-        intent = 'Threshold to Sweet Spot (8-20min) — 145-171W'
+        intent = f'Threshold to Sweet Spot (8-20min) — {round(0.85 * FTP)}-{FTP}W'
     else:
-        intent = 'Sweet Spot (20+ min) — 145-162W (85-94% FTP)'
+        intent = (f'Sweet Spot (20+ min) — {round(0.85 * FTP)}-{round(0.94 * FTP)}W '
+                  f'(85-94% FTP)')
     out['recommended_intent'] = intent
 
     return out
@@ -226,7 +241,10 @@ def estimate_tss(distance_km, climbs, target_if=0.65):
         climb_min = 0
     else:
         climb_km = sum(c['length_m'] for c in climbs) / 1000
-        flat_km = distance_km - climb_km
+        # Climb lengths come off the 50 m detection grid and aren't clamped to
+        # route distance; on climb-dense routes their sum can exceed it. Clamp
+        # so flat_km can't go negative (which would understate time and TSS).
+        flat_km = max(0.0, distance_km - climb_km)
         # Climbs done at ~75% FTP avg → speed depends on grade
         climb_min = sum(
             (c['length_m'] / 1000) / predict_speed(0.75 * FTP, c['avg_grad_pct']) * 60
@@ -333,12 +351,10 @@ def format_markdown(r):
                          f"**Avg grade**: {c['avg_grad_pct']:.1f}% | "
                          f"**Max**: {c['max_grad_pct']:.1f}%")
             lines.append("<!-- BEGIN GPX-PACING -->")
-            lines.append(f"- **Speed @ FTP (171W)**: {p['speed_kmh_FTP_171']} km/h "
-                         f"(~{p['time_min_FTP_171']} min)")
-            lines.append(f"- **Speed @ MAP (210W)**: {p['speed_kmh_MAP_210']} km/h "
-                         f"(~{p['time_min_MAP_210']} min)")
-            lines.append(f"- **Speed @ Z3 (130W)**: {p['speed_kmh_Z3_130']} km/h "
-                         f"(~{p['time_min_Z3_130']} min)")
+            for key in ('ftp', 'map', 'z3'):
+                pw = p['powers'][key]
+                lines.append(f"- **Speed @ {pw['label']}**: {pw['speed_kmh']} km/h "
+                             f"(~{pw['time_min']} min)")
             lines.append(f"- **VAM at FTP**: {p['vam_at_ftp_mh']:.0f} m/h")
             if 'power_for_60rpm_at_max_grad_w' in p:
                 lines.append(f"- **Survival (60rpm in 30×32 at max grade)**: "
