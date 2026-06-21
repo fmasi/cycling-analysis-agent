@@ -8,6 +8,15 @@ def test_estimate_tss_flat_only():
     assert r['estimated_tss_at_if_065'] == 85          # round(2 * 0.65^2 * 100)
 
 
+def test_estimate_tss_emits_uncertainty_band():
+    r = ag.estimate_tss(distance_km=50, climbs=[])
+    lo, hi = r['tss_range']
+    assert lo < r['estimated_tss_at_if_065']        # band low below the easy point
+    assert hi > r['estimated_tss_at_if_075']        # band high above the firm point
+    h_lo, h_hi = r['hours_range']
+    assert h_lo < r['estimated_total_hours'] < h_hi  # time band brackets the central estimate
+
+
 def test_estimate_tss_clamps_negative_flat():
     # Climb lengths summing beyond the route distance must not drive flat_km
     # negative (which would understate hours/TSS).

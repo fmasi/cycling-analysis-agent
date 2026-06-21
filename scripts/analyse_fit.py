@@ -299,11 +299,15 @@ def analyse(path):
     if len(arrays['time_s']) > MOVING_WIN_S:
         t = arrays['time_s']
         d = arrays['distance_m']
+        w = MOVING_WIN_S
         v_kmh = np.zeros_like(t)
-        for i in range(MOVING_WIN_S, len(t)):
-            dt = t[i] - t[i - MOVING_WIN_S]
-            if dt > 0:
-                v_kmh[i] = (d[i] - d[i - MOVING_WIN_S]) / dt * 3.6
+        # Rolling window speed, vectorized: v[i] = (d[i]-d[i-w])/(t[i]-t[i-w])*3.6
+        dt = t[w:] - t[:-w]
+        dd = d[w:] - d[:-w]
+        seg = np.zeros(len(dt))
+        ok = dt > 0
+        seg[ok] = dd[ok] / dt[ok] * 3.6
+        v_kmh[w:] = seg
         derived_moving_s = int((v_kmh > MOVING_SPEED_KMH).sum())
     if no_autopause and derived_moving_s > 0 and (timer - derived_moving_s) > 60:
         result['derived_moving_time_s'] = float(derived_moving_s)

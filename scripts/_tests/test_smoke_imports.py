@@ -13,9 +13,8 @@ import pytest
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 
 # One-offs / optional-dep scripts that aren't part of the importable core.
-DENYLIST = {
-    "build_ride_brief_pdf",  # one-off, hardcoded path + optional fpdf dep
-}
+# (The build_ride_brief_pdf one-off now lives under the gitignored notes/.)
+DENYLIST: set[str] = set()
 
 MODULES = sorted(
     p.stem

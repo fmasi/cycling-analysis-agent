@@ -4,6 +4,19 @@ import numpy as np
 import compare_riders as cr
 
 
+def test_windowed_grade_matches_loop():
+    rng = np.random.default_rng(7)
+    n = 500
+    d = np.cumsum(rng.uniform(1, 8, n))
+    e = np.cumsum(rng.uniform(-1, 1, n))
+    ref = np.zeros(n)
+    for i in range(n):
+        lo, hi = max(0, i - 25), min(n - 1, i + 25)
+        if d[hi] - d[lo] > 0:
+            ref[i] = (e[hi] - e[lo]) / (d[hi] - d[lo]) * 100
+    assert np.allclose(ref, cr._windowed_grade(d, e, 25))
+
+
 def test_detect_flat_attacks_no_altitude_returns_empty():
     # Power-only / no-baro FIT: altitude key absent → no crash, empty result.
     arr = {"distance_m": np.arange(200, dtype=float), "power_w": np.full(200, 300.0)}
