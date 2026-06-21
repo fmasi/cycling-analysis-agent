@@ -219,11 +219,20 @@ def estimate_tss(distance_km, climbs, target_if=0.65, bike=None, surface=None):
     flat_min = flat_km / 25 * 60
     total_hours = (flat_min + climb_min) / 60
     tss = total_hours * (target_if ** 2) * 100
+    # Uncertainty band (CLAUDE.md: ranges over single numbers). Time carries
+    # ~±10% from the flat-speed assumption + climb-pacing spread (±1.5–2 km/h),
+    # skewed slow; IF spans the easy→firm range (0.65–0.75). The band bounds the
+    # realistic ride: low = fast/easy, high = slow/firm.
+    hours_lo, hours_hi = round(total_hours * 0.90, 2), round(total_hours * 1.12, 2)
+    tss_lo = int(round(hours_lo * 0.65 ** 2 * 100))
+    tss_hi = int(round(hours_hi * 0.75 ** 2 * 100))
     return {
         'estimated_total_hours': round(total_hours, 2),
         'estimated_tss_at_if_065': round(tss, 0),
         'estimated_tss_at_if_070': round(total_hours * 0.70**2 * 100, 0),
         'estimated_tss_at_if_075': round(total_hours * 0.75**2 * 100, 0),
+        'hours_range': (hours_lo, hours_hi),
+        'tss_range': (tss_lo, tss_hi),
     }
 
 
@@ -306,7 +315,15 @@ def format_markdown(r):
 
     te = r['tss_estimate']
     lines.append("\n## TSS estimate\n")
-    lines.append(f"- **Total moving time**: ~{te['estimated_total_hours']} h")
+    hr_lo, hr_hi = te.get('hours_range', (None, None))
+    tss_lo, tss_hi = te.get('tss_range', (None, None))
+    if hr_lo is not None:
+        lines.append(f"- **Total moving time**: ~{te['estimated_total_hours']} h "
+                     f"(range {hr_lo}–{hr_hi} h)")
+        lines.append(f"- **TSS band**: ~{tss_lo}–{tss_hi} "
+                     f"(time ±~10% × IF 0.65–0.75 — the realistic envelope)")
+    else:
+        lines.append(f"- **Total moving time**: ~{te['estimated_total_hours']} h")
     lines.append(f"- **TSS at IF 0.65** (easy social): ~{te['estimated_tss_at_if_065']:.0f}")
     lines.append(f"- **TSS at IF 0.70** (moderate endurance): ~{te['estimated_tss_at_if_070']:.0f}")
     lines.append(f"- **TSS at IF 0.75** (firm endurance): ~{te['estimated_tss_at_if_075']:.0f}")
