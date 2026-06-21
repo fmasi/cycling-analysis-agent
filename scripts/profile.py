@@ -125,12 +125,50 @@ _FRONTMATTER_RE = re.compile(
     r"\A\s*---\s*\n(?P<body>.*?)\n---\s*(?:\n|$)", re.DOTALL
 )
 
+# An indented `key: value` line with a non-empty, single-line scalar value.
+_SCALAR_KV_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<key>[^:\n#][^:]*):(?P<sep>[ \t]+)(?P<val>\S.*?)[ \t]*$"
+)
+
+
+def _quote_colon_scalars(body: str) -> str:
+    """Double-quote scalar values that contain an embedded ``: `` (or trailing
+    ``:``), which strict YAML rejects ("mapping values are not allowed here")
+    but human-edited profiles routinely contain — ride-log notes, sources,
+    timestamps. The hand-rolled parser this replaced tolerated them, so keep
+    that leniency.
+
+    Left untouched: block scalars (``key: |``/``>``) and their indented bodies,
+    flow collections (``[`` / ``{``), and already-quoted/anchored values.
+    """
+    out: list[str] = []
+    block_indent: int | None = None
+    for line in body.splitlines():
+        indent = len(line) - len(line.lstrip(" "))
+        if block_indent is not None:
+            # Inside a block scalar: keep verbatim until we dedent out of it.
+            if line.strip() == "" or indent > block_indent:
+                out.append(line)
+                continue
+            block_indent = None
+        m = _SCALAR_KV_RE.match(line)
+        if m:
+            val = m.group("val")
+            if val[0] in "|>":
+                block_indent = indent
+            elif val[0] not in "\"'[{&*!" and re.search(r":(\s|$)", val):
+                esc = val.replace("\\", "\\\\").replace('"', '\\"')
+                line = f'{m.group("indent")}{m.group("key")}:{m.group("sep")}"{esc}"'
+        out.append(line)
+    return "\n".join(out)
+
 
 def _extract_frontmatter(text: str) -> dict[str, Any]:
     """Parse the leading `--- ... ---` YAML frontmatter block into a dict.
 
     Tolerates a leading HTML comment block (the template carries one) before
-    the opening `---`.
+    the opening `---`, and unquoted colons in free-text scalar values (common
+    in a hand-maintained profile — notes, sources, ride-log lines).
     """
     stripped = text.lstrip()
     if stripped.startswith("<!--"):
@@ -140,11 +178,17 @@ def _extract_frontmatter(text: str) -> dict[str, Any]:
     match = _FRONTMATTER_RE.match(stripped)
     if not match:
         return {}
+    body = match.group("body")
     try:
-        data = yaml.safe_load(match.group("body"))
-    except yaml.YAMLError as exc:
-        _warn(f"could not parse profile frontmatter ({exc}); using defaults")
-        return {}
+        data = yaml.safe_load(body)
+    except yaml.YAMLError:
+        # Retry after quoting free-text values with embedded colons, before
+        # giving up to defaults (which would silently run on the wrong numbers).
+        try:
+            data = yaml.safe_load(_quote_colon_scalars(body))
+        except yaml.YAMLError as exc:
+            _warn(f"could not parse profile frontmatter ({exc}); using defaults")
+            return {}
     return data if isinstance(data, dict) else {}
 
 
