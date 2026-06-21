@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from climb_categories import categorise
+from power_metrics import normalized_power
 
 GRADE_COLOURS = [
     (4,  '#e8e8e8'),   # 0-4%   light grey
@@ -57,7 +58,9 @@ def climb_stats(arrays, start_km, end_km):
     return {
         'duration_s': duration_s,
         'avg_w':  float(powers_pos.mean()) if len(powers_pos) else 0,
-        'np_w':   float((np.mean(powers_pos**4))**0.25) if len(powers_pos) else 0,
+        # Proper NP: 30 s rolling average over the segment's time series (keeps
+        # zeros), not a 4th-power mean of positive samples (which overstated it).
+        'np_w':   normalized_power(powers) if len(powers) else 0,
         'max_w':  float(powers.max()) if len(powers) else 0,
         'avg_hr': float(hrs_pos.mean()) if len(hrs_pos) else 0,
         'max_hr': float(hrs.max()) if len(hrs) else 0,
