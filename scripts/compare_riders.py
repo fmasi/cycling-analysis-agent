@@ -35,6 +35,22 @@ from power_metrics import (  # noqa: F401
 )
 
 
+def _windowed_grade(d: np.ndarray, e: np.ndarray, half: int = 25) -> np.ndarray:
+    """Centered ±half-sample grade (%) at every index — vectorized equivalent
+    of the per-sample loop (hi/lo clamped to bounds; 0 where the window has no
+    distance). O(n) numpy instead of an interpreted Python loop over 1 Hz data.
+    """
+    n = len(d)
+    idx = np.arange(n)
+    lo = np.maximum(0, idx - half)
+    hi = np.minimum(n - 1, idx + half)
+    dd = d[hi] - d[lo]
+    grad = np.zeros(n)
+    nz = dd > 0
+    grad[nz] = (e[hi][nz] - e[lo][nz]) / dd[nz] * 100
+    return grad
+
+
 def ftp_estimate_from_power(power: np.ndarray) -> dict:
     """FTP estimates from a single endurance ride.
 
@@ -149,12 +165,7 @@ def detect_flat_segments(arr: dict, min_duration_s: int = 60,
         return []
     # 50m window grade
     n = len(d)
-    grad = np.zeros(n)
-    for i in range(n):
-        lo = max(0, i - 25)
-        hi = min(n - 1, i + 25)
-        if d[hi] - d[lo] > 0:
-            grad[i] = (e[hi] - e[lo]) / (d[hi] - d[lo]) * 100
+    grad = _windowed_grade(d, e, 25)
     is_flat = np.abs(grad) <= max_abs_grade_pct
     # Find contiguous runs
     segs = []
@@ -189,12 +200,7 @@ def detect_flat_attacks(arr: dict, ftp_w: float, threshold_pct: float = 120,
     if p is None or d is None or e is None or len(p) < 100 or ftp_w <= 0:
         return []
     n = len(d)
-    grad = np.zeros(n)
-    for i in range(n):
-        lo = max(0, i - 25)
-        hi = min(n - 1, i + 25)
-        if d[hi] - d[lo] > 0:
-            grad[i] = (e[hi] - e[lo]) / (d[hi] - d[lo]) * 100
+    grad = _windowed_grade(d, e, 25)
     is_flat = np.abs(grad) <= max_grade_pct
     threshold = ftp_w * threshold_pct / 100.0
     p_clean = np.nan_to_num(p, nan=0.0)
