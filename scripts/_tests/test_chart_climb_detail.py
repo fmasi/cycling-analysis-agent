@@ -3,7 +3,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
-from chart_climb_detail import plot_climb_detail
+from chart_climb_detail import plot_climb_detail, climb_stats
+from power_metrics import normalized_power
+
+
+def test_climb_stats_np_is_proper_30s_rolling():
+    d = np.arange(120, dtype=float) * 5
+    p = np.concatenate([np.full(60, 100.0), np.full(60, 300.0)])  # variable effort
+    stats = climb_stats({"distance_m": d, "power_w": p}, 0.0, 0.6)
+    assert abs(stats['np_w'] - normalized_power(p)) < 1e-6   # proper NP, not 4th-power mean
+    assert stats['np_w'] > 200.0                             # NP > avg for variable power
 
 
 def test_plot_climb_detail_writes_png(tmp_path):

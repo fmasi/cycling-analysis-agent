@@ -87,6 +87,16 @@ from climb_detect import (  # noqa: E402,F401
 )
 
 
+LOOP_CLOSE_M = 150.0  # start/end within this distance ⇒ treat the route as a loop
+
+
+def _is_loop(lats, lons):
+    """True when the route's start and end are within LOOP_CLOSE_M metres."""
+    if len(lats) < 2:
+        return False
+    return haversine_m(lats[0], lons[0], lats[-1], lons[-1]) < LOOP_CLOSE_M
+
+
 def _bike_phys(bike, surface=None):
     """predict_speed kwargs (weight/CdA/CRR/drivetrain) for a bike + surface.
 
@@ -245,9 +255,9 @@ def analyse(path, include_coords=False, bike=None, surface=None):
     for c in climbs:
         c['predictions'] = predict_climb(c, bike=bike, surface=surface)
 
-    # Same start/end?
-    is_loop = (abs(lats[0] - lats[-1]) < 0.001 and
-               abs(lons[0] - lons[-1]) < 0.001)
+    # Same start/end? Use a metric distance (deg thresholds are latitude-
+    # dependent — 0.001° of longitude shrinks with latitude).
+    is_loop = _is_loop(lats, lons)
 
     result = {
         'file': str(path),

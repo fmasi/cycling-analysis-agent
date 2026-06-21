@@ -32,6 +32,15 @@ def test_predict_climb_keys_are_profile_independent():
     assert 'recommended_intent' in out
 
 
+def test_is_loop_uses_metric_distance():
+    import numpy as np
+    # Start == end → loop.
+    assert ag._is_loop(np.array([51.5, 51.6, 51.5]), np.array([-0.1, 0.0, -0.1]))
+    # Start/end ~13 km apart → not a loop (would've been a false "loop" if the
+    # 0.001° longitude test were used at this latitude on tiny deltas).
+    assert not ag._is_loop(np.array([51.5, 51.6]), np.array([-0.1, 0.0]))
+
+
 def test_predict_climb_steeper_is_slower():
     shallow = ag.predict_climb({'avg_grad_pct': 3.0, 'max_grad_pct': 4.0, 'length_m': 2000})
     steep = ag.predict_climb({'avg_grad_pct': 10.0, 'max_grad_pct': 12.0, 'length_m': 2000})

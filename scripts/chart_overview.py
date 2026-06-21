@@ -481,6 +481,6 @@ def render_overview(
                    fontsize=8, ncol=len(cat_handles),
                    framealpha=0.95, frameon=True)
 
-    plt.savefig(out_path, dpi=dpi, bbox_inches='tight', facecolor='white')
-    plt.close()
+    fig.savefig(out_path, dpi=dpi, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
     return out_path
