@@ -25,6 +25,52 @@ def test_bare_import_is_side_effect_free():
     assert isinstance(mod._CONSTANTS_CACHE, dict)
 
 
+def test_quote_colon_scalars_quotes_freetext_but_not_numbers():
+    import yaml
+    body = (
+        "fitness:\n"
+        "  ftp_w: 171\n"
+        "  power_note: 2026-06-19 (post): 60s peak 230 W (vs MAP: 210)\n"
+    )
+    data = yaml.safe_load(profile._quote_colon_scalars(body))  # must not raise
+    assert data["fitness"]["ftp_w"] == 171                    # number stays a number
+    assert "230 W" in data["fitness"]["power_note"]           # free-text preserved
+
+
+def test_quote_colon_scalars_preserves_block_flow_and_quoted():
+    import yaml
+    body = (
+        "a:\n"
+        "  notes: |\n"
+        "    line with: a colon stays literal\n"
+        "  flow: [x, y]\n"
+        "  ratio: \"1:2\"\n"
+    )
+    data = yaml.safe_load(profile._quote_colon_scalars(body))
+    assert "line with: a colon" in data["a"]["notes"]   # block body untouched
+    assert data["a"]["flow"] == ["x", "y"]              # flow list intact
+    assert data["a"]["ratio"] == "1:2"                  # already-quoted intact
+
+
+def test_load_profile_tolerates_unquoted_colons(tmp_path):
+    # Regression: a hand-edited profile with ride-log colons must NOT silently
+    # fall back to all-defaults (the PyYAML-strictness regression).
+    p = tmp_path / "USER_PROFILE.md"
+    p.write_text(
+        "---\n"
+        "fitness:\n"
+        "  ftp_w: 250\n"
+        "  power_note: 2026-06-19: 60s peak 230 W (vs MAP: 210)\n"
+        "training_load:\n"
+        "  source: live going in: CTL 39 / ATL 61 / TSB +1.5\n"
+        "---\n"
+    )
+    prof = profile.load_profile(p)
+    assert prof["fitness"]["ftp_w"] == 250            # not the 200 default
+    assert "230 W" in prof["fitness"]["power_note"]
+    assert "CTL 39" in prof["training_load"]["source"]
+
+
 def test_active_bike_physics_resolution(synthetic_profile):
     phys = synthetic_profile["physics"]
     # default_bike is "roadie" → its scalars fold into physics
