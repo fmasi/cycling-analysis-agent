@@ -634,6 +634,36 @@ def main():
                             file=sys.stderr,
                         )
 
+                    # Per-climb TdF-style detail charts for the significant
+                    # climbs (Cat 3+ / wall / steep short pitch). Additive —
+                    # never block the main flow on a chart failure.
+                    try:
+                        from chart_climb_detail import plot_climb_detail
+                        from climb_categories import select_climbs_for_detail
+                        gpx_data = parse_gpx(f)
+                        if gpx_data is not None and result['climbs']:
+                            charts_dir = (Path(__file__).parent.parent
+                                          / 'rides' / 'charts')
+                            charts_dir.mkdir(parents=True, exist_ok=True)
+                            arrays = {'distance_m': gpx_data['dists'],
+                                      'altitude_m': gpx_data['eles']}
+                            vers = (report.climbs if (use_hifi and report is not None
+                                    and len(report.climbs) == len(result['climbs']))
+                                    else None)
+                            stem = Path(f).stem
+                            sel = select_climbs_for_detail(
+                                result['climbs'], verifications=vers,
+                                mode='auto', cap=8)
+                            for idx in sel:
+                                cp = charts_dir / f'{stem}-climb{idx + 1}.png'
+                                if plot_climb_detail(arrays, result['climbs'][idx],
+                                                     idx + 1, cp):
+                                    print(f'[Saved climb {idx + 1} detail to {cp}]',
+                                          file=sys.stderr)
+                    except Exception as exc:
+                        print(f'⚠ per-climb detail charts failed: {exc}',
+                              file=sys.stderr)
+
 
 if __name__ == '__main__':
     main()

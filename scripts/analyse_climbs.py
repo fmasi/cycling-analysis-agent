@@ -35,6 +35,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from analyse_fit import parse_fit, to_arrays, find_climbs
+from bike_cli import add_bike_args, resolve_bike
+from bike_config import UnknownBikeError
 # Categorisation is shared with analyse_gpx via climb_categories (re-exported).
 from climb_categories import CATEGORIES, categorise  # noqa: F401
 
@@ -125,12 +127,14 @@ def plot_overview(arrays, climbs, out_path, ride_name=''):
     return True
 
 
-def write_markdown(climbs, arrays, fit_path, chart_paths, out_path):
+def write_markdown(climbs, arrays, fit_path, chart_paths, out_path, bike=None):
     """Produce the climb-categorisation markdown."""
     lines = []
     stem = Path(fit_path).stem
     lines.append(f"# Climbs — {stem}\n")
     lines.append(f"Source: `{fit_path}`\n")
+    if bike is not None:
+        lines.append(f"Bike: {bike.name} (`{bike.slug}`)\n")
 
     if not climbs:
         lines.append("No categorised climbs detected.\n")
@@ -200,6 +204,7 @@ def main():
     parser.add_argument('files', nargs='+', help='FIT file path(s)')
     parser.add_argument('--out-dir', default=None,
                         help='Base dir (default: rides/ relative to repo root)')
+    add_bike_args(parser)
     args = parser.parse_args()
 
     repo_root = Path(__file__).parent.parent
@@ -219,6 +224,15 @@ def main():
         if arrays is None:
             print('  No records — skipping.')
             continue
+
+        # Identify the bike (explicit --bike, else auto-detect from power).
+        bike = None
+        try:
+            has_power = bool((arrays['power_w'] > 0).any())
+            bike, src = resolve_bike(args.bike, fit_has_power=has_power)
+            print(f"  [bike] {bike.name} (`{bike.slug}`, via {src})")
+        except UnknownBikeError as exc:
+            print(f"  [bike] {exc}")
 
         if arrays['altitude_m'].max() - arrays['altitude_m'].min() < 30:
             print('  Insufficient elevation variation — skipping.')
@@ -250,7 +264,7 @@ def main():
 
         # Markdown
         md_path = analyses_dir / f'{stem}-climbs.md'
-        write_markdown(cat_climbs, arrays, str(path), chart_paths, md_path)
+        write_markdown(cat_climbs, arrays, str(path), chart_paths, md_path, bike=bike)
         print(f'  Wrote {md_path}')
 
         total_pts = sum(categorise(c['length_m']/1000, c['avg_grad_pct'])[1]
