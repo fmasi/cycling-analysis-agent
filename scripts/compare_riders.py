@@ -27,37 +27,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from analyse_fit import parse_fit, to_arrays
-
-
-# --------------------------------------------------------------------
-# Power curve, NP, IF, TSS helpers (mirror analyse_fit conventions)
-# --------------------------------------------------------------------
-
-def peak_power_curve(power: np.ndarray, windows_s: list[int]) -> dict:
-    """Best rolling-average power at each window length (seconds)."""
-    out = {}
-    p = np.nan_to_num(power, nan=0.0)
-    for w in windows_s:
-        if len(p) < w:
-            out[w] = None
-            continue
-        # uniform rolling mean
-        c = np.convolve(p, np.ones(w) / w, mode="valid")
-        out[w] = float(c.max())
-    return out
-
-
-def normalized_power(power: np.ndarray) -> float:
-    """30s rolling avg → 4th power → mean → 4th root."""
-    p = np.nan_to_num(power, nan=0.0)
-    if len(p) < 30:
-        return float(p.mean()) if len(p) else 0.0
-    roll = np.convolve(p, np.ones(30) / 30, mode="valid")
-    return float((np.mean(roll ** 4)) ** 0.25)
-
-
-def variability_index(np_w: float, avg_w: float) -> float:
-    return np_w / avg_w if avg_w > 0 else 0.0
+# Power/speed metrics are shared with analyse_fit via power_metrics
+# (re-exported here so existing internal references keep working).
+from power_metrics import (  # noqa: F401
+    peak_power_curve, normalized_power, variability_index,
+    efficiency_factor, peak_speed_curve, time_in_zones,
+)
 
 
 def ftp_estimate_from_power(power: np.ndarray) -> dict:
@@ -373,24 +348,6 @@ def render_ftp_estimate(r1: RiderRide, r2: RiderRide) -> str:
 # Main
 # --------------------------------------------------------------------
 
-def efficiency_factor(np_w: float, avg_hr: float) -> float:
-    """EF = NP / avg HR. Aerobic fitness proxy; higher is more efficient."""
-    return np_w / avg_hr if avg_hr > 0 else 0.0
-
-
-def peak_speed_curve(speed_kmh: np.ndarray, windows_s: list[int]) -> dict:
-    """Best rolling-average speed (km/h) at each window length."""
-    out = {}
-    s = np.nan_to_num(speed_kmh, nan=0.0)
-    for w in windows_s:
-        if len(s) < w:
-            out[w] = None
-            continue
-        c = np.convolve(s, np.ones(w) / w, mode="valid")
-        out[w] = float(c.max())
-    return out
-
-
 # --------------------------------------------------------------------
 # Time-aligned proximity events ("when were we drafting together?")
 # --------------------------------------------------------------------
@@ -569,30 +526,6 @@ def find_chase_episodes(rows: list[dict], events: list[dict]) -> list[dict]:
         scored.append({**ev, "spread_m": spread, "score": score})
     scored.sort(key=lambda x: -x["score"])
     return scored
-
-
-def time_in_zones(power: np.ndarray, ftp: float) -> dict:
-    """Time-in-zones (Coggan), as percentage of total non-zero samples."""
-    if power is None or len(power) == 0 or ftp <= 0:
-        return {}
-    p = power[power > 0]
-    if len(p) == 0:
-        return {}
-    bins = {
-        "Z1 (<55%)":       (0,        0.55 * ftp),
-        "Z2 (55–75%)":     (0.55*ftp, 0.75 * ftp),
-        "Z3 (75–90%)":     (0.75*ftp, 0.90 * ftp),
-        "Z4 (90–105%)":    (0.90*ftp, 1.05 * ftp),
-        "Z5 (105–120%)":   (1.05*ftp, 1.20 * ftp),
-        "Z6 (120–150%)":   (1.20*ftp, 1.50 * ftp),
-        "Z7 (>150%)":      (1.50*ftp, float("inf")),
-    }
-    total = len(p)
-    out = {}
-    for name, (lo, hi) in bins.items():
-        n = np.sum((p > lo) & (p <= hi))
-        out[name] = round(100.0 * n / total, 1)
-    return out
 
 
 def main() -> int:

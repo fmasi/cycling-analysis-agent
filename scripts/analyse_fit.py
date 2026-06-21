@@ -43,6 +43,7 @@ from profile import MAX_HR_BPM, REST_HR_BPM
 from climb_detect import median_filter_1d, compute_max_grade, find_climbs  # noqa: F401
 from bike_cli import add_bike_args, resolve_bike
 from bike_config import UnknownBikeError
+from power_metrics import peak_power_curve
 
 
 # Moving-time threshold: speed below this counts as "stopped". 1 km/h chosen
@@ -165,18 +166,11 @@ def to_arrays(records):
 
 
 def power_curve(power_arr, durations_s=(1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600)):
-    """Best-effort power for given durations."""
-    out = {}
-    for d in durations_s:
-        if d == 1:
-            out[d] = float(power_arr.max()) if len(power_arr) else 0
-            continue
-        if d > len(power_arr):
-            continue
-        cumsum = np.cumsum(power_arr.astype(float))
-        rolling = (cumsum[d:] - cumsum[:-d]) / d
-        out[d] = float(rolling.max()) if len(rolling) else 0
-    return out
+    """Best-effort peak power for given durations (omits durations longer than
+    the ride). Delegates to the shared power_metrics implementation — the old
+    local cumsum version was off-by-one (it dropped the window starting at
+    index 0, under-reporting a peak that occurred at the very start)."""
+    return peak_power_curve(power_arr, list(durations_s), missing="omit")
 
 
 def hr_zones_distribution(hr_arr, max_hr=MAX_HR_BPM, rest_hr=REST_HR_BPM):
