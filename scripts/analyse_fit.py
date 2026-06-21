@@ -41,6 +41,8 @@ from profile import MAX_HR_BPM, REST_HR_BPM
 # Climb-detection primitives live in climb_detect (shared with analyse_gpx).
 # Re-exported here so existing `from analyse_fit import find_climbs` keeps working.
 from climb_detect import median_filter_1d, compute_max_grade, find_climbs  # noqa: F401
+from bike_cli import add_bike_args, resolve_bike
+from bike_config import UnknownBikeError
 
 
 # Moving-time threshold: speed below this counts as "stopped". 1 km/h chosen
@@ -534,6 +536,8 @@ def format_markdown(result):
     lines.append(f"# Ride analysis — {Path(result['file']).stem}\n")
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     lines.append(f"Source: `{result['file']}`\n")
+    if result.get('bike_name'):
+        lines.append(f"Bike: {result['bike_name']} (`{result['bike_slug']}`)\n")
     lines.append("\n## Summary\n")
     lines.append(f"- **Date**: {result['start_time']}")
     lines.append(f"- **Sport**: {result['sport']}/{result['sub_sport']}")
@@ -625,6 +629,7 @@ def main():
                         help='Output JSON instead of markdown')
     parser.add_argument('--save', action='store_true',
                         help='Save markdown output to rides/analyses/<name>.md')
+    add_bike_args(parser)
     args = parser.parse_args()
 
     if not args.files and not args.pair:
@@ -650,6 +655,17 @@ def main():
 
     for f in args.files:
         result = analyse(f)
+        # Identify the bike: explicit --bike, else auto-detect from power
+        # presence (power meter ⇒ the bike with has_power_meter). Recorded for
+        # the analysis header + ride log; degrades quietly without a registry.
+        try:
+            bike, src = resolve_bike(args.bike, fit_has_power=result.get('has_power'))
+            result['bike_slug'] = bike.slug
+            result['bike_name'] = bike.name
+            if not args.json:
+                print(f"[bike] {bike.name} (`{bike.slug}`, via {src})", file=sys.stderr)
+        except UnknownBikeError as exc:
+            print(f"[bike] {exc}", file=sys.stderr)
         if args.json:
             print(json.dumps(result, indent=2, default=str))
         else:

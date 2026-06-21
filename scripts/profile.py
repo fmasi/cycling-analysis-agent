@@ -154,11 +154,19 @@ def _quote_colon_scalars(body: str) -> str:
         m = _SCALAR_KV_RE.match(line)
         if m:
             val = m.group("val")
-            if val[0] in "|>":
+            # Split off an inline ` #` comment (YAML strips it anyway). Only the
+            # value proper decides quoting — a colon living in the comment, e.g.
+            # `battery_wh: 345  # Derived: ...`, must NOT trigger quoting (that
+            # would turn the number into a string).
+            cm = re.search(r"\s#", val)
+            value = val[: cm.start()].rstrip() if cm else val
+            comment = val[cm.start():] if cm else ""
+            if value[:1] in ("|", ">"):
                 block_indent = indent
-            elif val[0] not in "\"'[{&*!" and re.search(r":(\s|$)", val):
-                esc = val.replace("\\", "\\\\").replace('"', '\\"')
-                line = f'{m.group("indent")}{m.group("key")}:{m.group("sep")}"{esc}"'
+            elif value and value[0] not in "\"'[{&*!" and re.search(r":(\s|$)", value):
+                esc = value.replace("\\", "\\\\").replace('"', '\\"')
+                tail = f" {comment}" if comment else ""
+                line = f'{m.group("indent")}{m.group("key")}:{m.group("sep")}"{esc}"{tail}'
         out.append(line)
     return "\n".join(out)
 

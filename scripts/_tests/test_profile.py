@@ -37,6 +37,14 @@ def test_quote_colon_scalars_quotes_freetext_but_not_numbers():
     assert "230 W" in data["fitness"]["power_note"]           # free-text preserved
 
 
+def test_quote_colon_scalars_ignores_colon_in_inline_comment():
+    import yaml
+    # The only colon is inside the ` # ...` comment → value stays numeric.
+    body = "a:\n  battery_wh: 345  # Derived: 9.6 Ah x 36 V = 345 Wh\n"
+    data = yaml.safe_load(profile._quote_colon_scalars(body))
+    assert data["a"]["battery_wh"] == 345        # int, not a quoted string
+
+
 def test_quote_colon_scalars_preserves_block_flow_and_quoted():
     import yaml
     body = (

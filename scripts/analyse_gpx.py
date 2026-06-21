@@ -26,6 +26,9 @@ from physics_model import (
     power_for_60rpm_in_lowest_gear, SYSTEM_WEIGHT_KG,
     speed_at_cadence_rpm
 )
+from gearing import suggest_gear, CLIMBING_CADENCE_RPM
+from bike_cli import add_bike_args, resolve_bike, resolve_surface
+from bike_config import UnknownBikeError
 
 
 from geo_util import haversine_m  # noqa: E402,F401  (shared; re-exported)
@@ -84,10 +87,46 @@ from climb_detect import (  # noqa: E402,F401
 )
 
 
-def predict_climb(climb):
-    """Compute speed/duration/VAM/gear info for a single climb."""
+def _bike_phys(bike, surface=None):
+    """predict_speed kwargs (weight/CdA/CRR/drivetrain) for a bike + surface.
+
+    Empty dict when bike is None → predict_speed falls back to module defaults
+    (the active/default bike), preserving the no-`--bike` behaviour.
+    """
+    if bike is None:
+        return {}
+    phys = {
+        'system_weight_kg': bike.system_weight_kg_default,
+        'cda': bike.cda,
+        'eta': bike.drivetrain_efficiency,
+    }
+    crr = None
+    if surface and surface in bike.crr_by_surface:
+        crr = bike.crr_by_surface[surface]
+    elif bike.crr_by_surface:
+        crr = next(iter(bike.crr_by_surface.values()))
+    if crr is not None:
+        phys['crr'] = crr
+    return phys
+
+
+def _lowest_ratio(bike):
+    """Lowest gear ratio (smallest chainring / largest cog), or None."""
+    g = getattr(bike, 'gearing', None) if bike else None
+    if g and g.get('chainrings_t') and g.get('cassette_t'):
+        return min(g['chainrings_t']) / max(g['cassette_t'])
+    return None
+
+
+def predict_climb(climb, bike=None, surface=None):
+    """Compute speed/duration/VAM/gear info for a single climb.
+
+    When `bike` is given, predictions use that bike's weight/CdA/CRR(surface)/
+    drivetrain and (if it has gearing) a suggested gear + survival ratio.
+    """
     grad = climb['avg_grad_pct']
     length_km = climb['length_m'] / 1000
+    phys = _bike_phys(bike, surface)
     out = {}
 
     # Power targets derived from the profile (never hardcode FTP/MAP into keys
@@ -101,22 +140,33 @@ def predict_climb(climb):
         ('z3', z3_w, f'Z3 ({z3_w}W)'),
         ('z2', z2_w, f'Z2 ({z2_w}W)'),
     ]:
-        speed = predict_speed(power, grad)
-        out['powers'][key] = {
+        speed = predict_speed(power, grad, **phys)
+        entry = {
             'w': power,
             'label': label,
             'speed_kmh': round(speed, 2),
             'time_min': round(length_km / speed * 60, 1) if speed > 0 else None,
         }
+        # Suggested gear for this speed when the bike has gearing.
+        if bike is not None and getattr(bike, 'gearing', None) and speed > 0:
+            g = suggest_gear(speed, bike, prefer_rpm=CLIMBING_CADENCE_RPM)
+            if g is not None:
+                cr, cog, rpm = g
+                entry['gear'] = {'chainring_t': cr, 'cog_t': cog, 'rpm': round(rpm)}
+        out['powers'][key] = entry
 
-    out['vam_at_ftp_mh'] = round(vam_at_power(FTP, grad), 0)
-    # Survival check at max grade
+    out['vam_at_ftp_mh'] = round(vam_at_power(FTP, grad, **phys), 0)
+    # Survival check at max grade (use the bike's lowest gear when known).
     if climb['max_grad_pct'] > 5:
+        surv = dict(phys)
+        lr = _lowest_ratio(bike)
+        if lr is not None:
+            surv['lowest_ratio'] = lr
         out['power_for_60rpm_at_max_grad_w'] = round(
-            power_for_60rpm_in_lowest_gear(climb['max_grad_pct']), 0)
+            power_for_60rpm_in_lowest_gear(climb['max_grad_pct'], **surv), 0)
 
     # Pacing intent based on duration — bounds derived from FTP/MAP/AC.
-    time_at_ftp = length_km / predict_speed(FTP, grad) * 60
+    time_at_ftp = length_km / predict_speed(FTP, grad, **phys) * 60
     if time_at_ftp < 3:
         intent = f'AC zone (sub-3min) — push hard up to ~{AC_FRESH_EST}W'
     elif time_at_ftp <= 8:
@@ -132,13 +182,14 @@ def predict_climb(climb):
     return out
 
 
-def estimate_tss(distance_km, climbs, target_if=0.65):
+def estimate_tss(distance_km, climbs, target_if=0.65, bike=None, surface=None):
     """
     Rough TSS estimate for a planned ride.
 
     Assumes ~25 km/h average on flat sections, climbs computed at predicted speed,
-    target IF chosen by rider.
+    target IF chosen by rider. Climb speeds use the bike's physics when given.
     """
+    phys = _bike_phys(bike, surface)
     if not climbs:
         flat_km = distance_km
         climb_min = 0
@@ -150,7 +201,7 @@ def estimate_tss(distance_km, climbs, target_if=0.65):
         flat_km = max(0.0, distance_km - climb_km)
         # Climbs done at ~75% FTP avg → speed depends on grade
         climb_min = sum(
-            (c['length_m'] / 1000) / predict_speed(0.75 * FTP, c['avg_grad_pct']) * 60
+            (c['length_m'] / 1000) / predict_speed(0.75 * FTP, c['avg_grad_pct'], **phys) * 60
             for c in climbs
         )
 
@@ -166,7 +217,7 @@ def estimate_tss(distance_km, climbs, target_if=0.65):
     }
 
 
-def analyse(path, include_coords=False):
+def analyse(path, include_coords=False, bike=None, surface=None):
     data = parse_gpx(path)
     if data is None:
         return {'file': str(path), 'error': 'No trackpoints found'}
@@ -192,7 +243,7 @@ def analyse(path, include_coords=False):
             ]
 
     for c in climbs:
-        c['predictions'] = predict_climb(c)
+        c['predictions'] = predict_climb(c, bike=bike, surface=surface)
 
     # Same start/end?
     is_loop = (abs(lats[0] - lats[-1]) < 0.001 and
@@ -201,6 +252,9 @@ def analyse(path, include_coords=False):
     result = {
         'file': str(path),
         'route_name': data['name'],
+        'bike_slug': bike.slug if bike is not None else None,
+        'bike_name': bike.name if bike is not None else None,
+        'surface': surface,
         'distance_km': round(float(dists[-1] / 1000), 2),
         'total_ascent_m': round(total_ascent, 0),
         'total_descent_m': round(total_descent, 0),
@@ -210,7 +264,7 @@ def analyse(path, include_coords=False):
         'start_lon': round(float(lons[0]), 5),
         'is_loop': is_loop,
         'climbs': climbs,
-        'tss_estimate': estimate_tss(dists[-1] / 1000, climbs),
+        'tss_estimate': estimate_tss(dists[-1] / 1000, climbs, bike=bike, surface=surface),
     }
 
     # Add full trackpoints if requested (for regression tests)
@@ -228,6 +282,9 @@ def format_markdown(r):
     lines = []
     lines.append(f"# Route — {r.get('route_name', 'Unknown')}\n")
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+    if r.get('bike_name'):
+        surf = f" · {r['surface']}" if r.get('surface') else ""
+        lines.append(f"**Bike**: {r['bike_name']} (`{r['bike_slug']}`){surf}\n")
     lines.append(f"Source: `{r['file']}`\n")
     lines.append("\n## Summary\n")
     lines.append(f"- **Distance**: {r['distance_km']} km")
@@ -351,6 +408,7 @@ def main():
     parser.add_argument('--dem-root',
                         default=str(Path.home() / 'cycling-coach-dem'),
                         help='Path to local DEM tile root.')
+    add_bike_args(parser)
     args = parser.parse_args()
 
     include = _parse_idx_list(args.include)
@@ -372,7 +430,20 @@ def main():
             print(format_waypoint_table(items))
             continue
 
-        result = analyse(f, include_coords=args.json)
+        # Resolve the bike (explicit --bike, else GPX-filename heuristic, else
+        # default) and the surface. Degrade gracefully if the profile has no
+        # bikes: registry so single-bike setups still work.
+        bike = surface = None
+        try:
+            bike, src = resolve_bike(args.bike, fit_has_power=None, gpx_path=f)
+            surface = resolve_surface(bike, args.surface)
+            if not args.json:
+                print(f"[bike] {bike.name} (`{bike.slug}`, via {src})"
+                      f"{' · ' + surface if surface else ''}", file=sys.stderr)
+        except UnknownBikeError as exc:
+            print(f"[bike] {exc} — using default physics", file=sys.stderr)
+
+        result = analyse(f, include_coords=args.json, bike=bike, surface=surface)
         if args.json:
             print(json.dumps(result, indent=2, default=str))
         else:

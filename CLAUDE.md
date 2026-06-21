@@ -29,11 +29,24 @@ If `USER_PROFILE.md` does not exist, copy `USER_PROFILE.example.md` to `USER_PRO
 
 ---
 
+## Bike selection
+
+Analysis is bike-specific (weight, CdA, CRR-by-surface, gearing all differ per bike). The active bike comes from `USER_PROFILE.md`'s `bikes:` registry + `default_bike`; the scripts resolve it automatically, with `--bike <slug>` to override.
+
+**Resolution order (highest priority first):**
+1. Explicit `--bike <slug>` on the command line.
+2. **Auto-detect** — `analyse_fit.py` infers from the FIT's **power presence** (power records ⇒ the bike whose `has_power_meter: true`, e.g. the Tripster; no power ⇒ the non-power bike, e.g. the Brompton). `analyse_gpx.py` infers from a `commute` GPX filename. Auto-detect only fires when the match is unambiguous.
+3. The profile's `default_bike` (the scripts print a `[bike] …` line to stderr noting the source).
+
+`analyse_gpx.py` also takes `--surface <key>` (defaults to the bike's first `surfaces_supported`); the bike's `crr_by_surface[surface]`, CdA, system weight and gearing then flow into the speed/pacing predictions, and climbs gain a suggested gear. The selected bike is recorded in every analysis header. The full typed bike API is `scripts/bike_config.py:load_bike()`; CLI resolution is `scripts/bike_cli.py:resolve_bike()`.
+
+---
+
 ## Workflow expectations
 
 When the rider provides a FIT file:
 1. Read `USER_PROFILE.md` for current profile and prior context
-2. Run `python scripts/analyse_fit.py <file>` for the canonical parse
+2. Run `python scripts/analyse_fit.py <file>` for the canonical parse (auto-detects the bike from power presence; pass `--bike <slug>` to override). The chosen bike is recorded in the analysis header and Ride log.
 3. Save analysis to `rides/analyses/<YYYY-MM-DD>-<short-name>.md`
 4. **For long rides with climbs**: also run `python scripts/analyse_climbs.py <file>` to produce UCI-style climb categorisation, day KOM total, and TdF-style profile charts. Outputs go to `rides/analyses/<stem>-climbs.md` and `rides/charts/<stem>-*.png`. Skip cleanly if no climb has index ≥ 2. Reference the charts in the canonical ride analysis.
 5. Add an entry to the **Ride log** section in `USER_PROFILE.md` (include KOM total when present)
@@ -41,7 +54,7 @@ When the rider provides a FIT file:
 7. Commit framework / scripts changes if any. **Do not** `git add USER_PROFILE.md` — it is gitignored.
 
 When the rider provides a GPX file:
-1. Run `python scripts/analyse_gpx.py --save <file>` for climbs and predictions
+1. Run `python scripts/analyse_gpx.py --save <file>` for climbs and predictions. Add `--bike <slug>` (else default/filename-detected) and `--surface <key>` so the bike's weight/CdA/CRR/gearing drive the pacing + gear suggestions.
 2. Markdown auto-saves to `routes/<name>-prediction.md`
 3. **Overview chart auto-generates** to `rides/charts/<name>-overview.png` (3-row layout: waypoint lane / profile / Strava-style grade strip; uses `adjustText` for label-collision avoidance and the `chart_overview` module). Pass `--no-chart` to skip. When hi-fi data is available, wall markers (▲ peak%) are placed on the elevation curve.
 4. Custom GPX waypoints (food stops, water, pub, POI) are auto-classified, deduped, and placed in the waypoint lane.
