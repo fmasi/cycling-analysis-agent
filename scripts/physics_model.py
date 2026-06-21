@@ -39,12 +39,17 @@ CRR_OVERPRESSURE = 0.0058   # high pressure above break-point, OR butyl tubes
 
 def predict_speed(power_crank_w, grade_pct, system_weight_kg=SYSTEM_WEIGHT_KG,
                   cda=CDA_DEFAULT, crr=CRR_DEFAULT, eta=DRIVETRAIN_EFFICIENCY,
-                  rho=AIR_DENSITY, g=GRAVITY):
+                  rho=AIR_DENSITY, g=GRAVITY, cap_kmh=None):
     """
     Predict speed (km/h) given crank power (W) and grade (%).
 
     Solves: P_wheel = (½ρCdA·v² + CRR·m·g + m·g·sin(θ)) · v
     where P_wheel = P_crank × η_drive
+
+    On steep descents the model returns the unbraked terminal coasting speed,
+    which can be unrealistically high as a coaching number. Pass `cap_kmh` to
+    clamp the result (callers reporting descent speeds should). The default
+    (None, uncapped) keeps the function a pure inverse of `predict_power`.
     """
     p_wheel = power_crank_w * eta
     theta = np.arctan(grade_pct / 100)
@@ -60,7 +65,10 @@ def predict_speed(power_crank_w, grade_pct, system_weight_kg=SYSTEM_WEIGHT_KG,
     real_roots = [r.real for r in roots if np.isreal(r) and r.real > 0]
     if not real_roots:
         return 0.0
-    return min(real_roots) * 3.6  # m/s → km/h
+    speed_kmh = min(real_roots) * 3.6  # m/s → km/h
+    if cap_kmh is not None:
+        speed_kmh = min(speed_kmh, cap_kmh)
+    return speed_kmh
 
 
 def predict_power(speed_kmh, grade_pct, system_weight_kg=SYSTEM_WEIGHT_KG,
@@ -107,7 +115,8 @@ def power_for_60rpm_in_lowest_gear(grade_pct, lowest_ratio=30/32,
                                    system_weight_kg=SYSTEM_WEIGHT_KG, **kwargs):
     """
     Power needed to maintain 60 rpm (the minimum sustainable cadence under load)
-    in the lowest gear (default 30×32 = ratio 0.94) on a given grade.
+    in the lowest gear (default 30T chainring / 32T cog → ratio ≈ 0.94) on a
+    given grade.
 
     This is the 'survival number' for steep climbs.
     """
@@ -120,10 +129,19 @@ ZONES = power_zone_bounds()
 
 
 def zone_for_power(power_w):
-    """Return the primary zone name for a given power."""
+    """Return the primary zone name for a given power.
+
+    The eight zones overlap by design (Z4 Sweet Spot straddles Z3 Tempo and
+    Z5 Threshold). Overlaps resolve to the highest-intensity matching zone, so
+    e.g. ~0.88·FTP reports as Z4 Sweet Spot rather than Z3 Tempo (a plain
+    first-match scan left Z4 unreachable).
+    """
+    match = None
     for name, lo, hi in ZONES:
         if lo <= power_w <= hi:
-            return name
+            match = name
+    if match is not None:
+        return match
     if power_w < ZONES[0][1]:
         return ZONES[0][0]
     return ZONES[-1][0]

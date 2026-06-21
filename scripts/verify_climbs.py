@@ -60,13 +60,7 @@ class FidelityReport:
     stitched_elevs: list[float] = field(default_factory=list)
 
 
-def haversine_m(lat1, lon1, lat2, lon2):
-    r = 6371000.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
+from geo_util import haversine_m  # noqa: E402,F401  (shared; re-exported)
 
 
 def densify_polyline(
@@ -307,14 +301,17 @@ def _verify_one_climb(
         # Linear-interpolate remaining gaps from nearest valid neighbours.
         valid_idx = [i for i, e in enumerate(elevs) if e is not None]
         if not valid_idx:
-            # Total miss — return a zeroed verification so the run continues.
+            # Total miss — no DEM coverage and no fallback. Flag as unverified
+            # (NaN peak/delta) so the report renders "(unverified)" and the
+            # verdict reflects the gap, rather than a benign 0.0% / large
+            # negative delta that reads as "flat & safe".
             return ClimbVerification(
                 name=f"km {climb['start_km']:.2f}",
                 km_start=float(climb["start_km"]),
                 km_end=float(climb["end_km"]),
                 gpx_peak_pct=float(climb.get("max_grad_pct", 0.0)),
-                verified_peak_pct=0.0,
-                delta_pp=0.0,
+                verified_peak_pct=float("nan"),
+                delta_pp=float("nan"),
                 length_above_8=0.0,
                 length_above_10=0.0,
                 length_above_12=0.0,
@@ -386,41 +383,23 @@ def _verify_one_climb(
     )
 
 
-def detect_missed_climbs(
-    route_lats,
-    route_lons,
-    route_dists,
-    known_climbs: list[dict],
-    dem,
-    stride_m: float = 25.0,
-    min_length_m: float = 300.0,
-    min_grade_pct: float = 1.5,
-    min_gain_m: float = 20.0,
-    fallback=None,
-) -> list[ClimbVerification]:
-    """Walk the entire route and flag rising segments not in `known_climbs`.
+def _sample_route_dem(
+    lats, lons, dem, stride_m: float = 25.0, fallback=None,
+) -> tuple[list[tuple[float, float]], list[float], list[float], float]:
+    """Densify route at `stride_m`, sample DEM at every point, gap-fill.
 
-    Two-pass:
-    1. Coarse sweep at `stride_m` (25m) with 100m-window smoothing finds
-       candidate km-ranges where the smoothed grade exceeds `min_grade_pct`.
-    2. Each candidate is then handed to `_verify_one_climb` for a fine
-       re-sample at 5m stride / 30m smoothing — so missed climbs get the
-       same hi-fi treatment (accurate peak, mean-max curve, walls, hi-fi
-       pacing) as declared climbs. Pass 1 alone reports the coarsely-
-       smoothed peak, which under-states walls inside the climb.
-
-    Segments overlapping any known climb's [start_km, end_km] are dropped
-    before Pass 2 — we don't pay the fine-resample cost twice.
-
-    If `fallback` is supplied and configured, points uncovered by `dem`
-    are filled in one batched API call before Pass 1 gradient computation.
+    Returns `(densified_coords, cum_dists_m, elevs_m, coverage_pct)`.
+    `coverage_pct` reflects DEM coverage BEFORE any fallback fill — same
+    semantic as the previous standalone coverage sweep.
     """
-    if len(route_lats) < 2:
-        return []
-
-    coords = [(float(la), float(lo)) for la, lo in zip(route_lats, route_lons)]
+    coords = [(float(la), float(lo)) for la, lo in zip(lats, lons)]
     densified = densify_polyline(coords, stride_m=stride_m)
+    if not densified:
+        return [], [], [], 0.0
+
     elevs_raw = [dem.sample(la, lo) for la, lo in densified]
+    covered = sum(1 for e in elevs_raw if e is not None)
+    coverage_pct = 100.0 * covered / len(elevs_raw)
 
     missing_idx = [i for i, e in enumerate(elevs_raw) if e is None]
     if missing_idx and fallback is not None and getattr(fallback, "configured", False):
@@ -432,10 +411,10 @@ def detect_missed_climbs(
         except Exception:
             pass
 
-    # Drop trailing unsampled coords; interpolate interior gaps.
     valid_idx = [i for i, e in enumerate(elevs_raw) if e is not None]
     if len(valid_idx) < 2:
-        return []
+        return densified, [], [], coverage_pct
+
     elevs: list[float] = []
     for i, e in enumerate(elevs_raw):
         if e is not None:
@@ -459,6 +438,51 @@ def detect_missed_climbs(
     dists = [0.0]
     for (la1, lo1), (la2, lo2) in zip(densified, densified[1:]):
         dists.append(dists[-1] + haversine_m(la1, lo1, la2, lo2))
+
+    return densified, dists, elevs, coverage_pct
+
+
+def detect_missed_climbs(
+    route_lats,
+    route_lons,
+    route_dists,
+    known_climbs: list[dict],
+    dem,
+    stride_m: float = 25.0,
+    min_length_m: float = 300.0,
+    min_grade_pct: float = 1.5,
+    min_gain_m: float = 20.0,
+    fallback=None,
+    presampled: tuple[list, list[float], list[float], float] | None = None,
+) -> list[ClimbVerification]:
+    """Walk the entire route and flag rising segments not in `known_climbs`.
+
+    Two-pass:
+    1. Coarse sweep at `stride_m` (25m) with 100m-window smoothing finds
+       candidate km-ranges where the smoothed grade exceeds `min_grade_pct`.
+    2. Each candidate is then handed to `_verify_one_climb` for a fine
+       re-sample at 5m stride / 30m smoothing — so missed climbs get the
+       same hi-fi treatment (accurate peak, mean-max curve, walls, hi-fi
+       pacing) as declared climbs. Pass 1 alone reports the coarsely-
+       smoothed peak, which under-states walls inside the climb.
+
+    Segments overlapping any known climb's [start_km, end_km] are dropped
+    before Pass 2 — we don't pay the fine-resample cost twice.
+
+    If `fallback` is supplied and configured, points uncovered by `dem`
+    are filled in one batched API call before Pass 1 gradient computation.
+    """
+    if len(route_lats) < 2:
+        return []
+
+    if presampled is not None:
+        _, dists, elevs, _ = presampled
+    else:
+        _, dists, elevs, _ = _sample_route_dem(
+            route_lats, route_lons, dem, stride_m=stride_m, fallback=fallback,
+        )
+    if len(elevs) < 2:
+        return []
 
     grades = smoothed_grades(elevs, dists, window_m=100.0)
 
@@ -558,38 +582,70 @@ def verify_route(gpx_path: Path, dem, fallback=None) -> FidelityReport:
             fallback_count += 1
         verifications.append(v)
 
-    missed = detect_missed_climbs(lats, lons, dists, climbs, dem, fallback=fallback)
+    # Single full-route DEM sweep — used for (a) coverage, (b) missed-climb
+    # detection, (c) the stitched-profile baseline (replaces GPX altitudes
+    # when coverage is high enough). The same sweep used to be discarded
+    # after coverage + missed climbs — now it's the baseline for everything.
+    presampled = _sample_route_dem(lats, lons, dem, stride_m=25.0, fallback=fallback)
+    _, dem_dists, dem_elevs, coverage_pct = presampled
 
-    deltas = [v.delta_pp for v in verifications]
-    verdict = classify_verdict(deltas, missed=len(missed))
+    missed = detect_missed_climbs(
+        lats, lons, dists, climbs, dem, fallback=fallback, presampled=presampled,
+    )
 
-    # Coverage = % of densified route points that the local DEM covers
-    # (i.e. did NOT need fallback). Sample the full route at the same 25m
-    # stride detect_missed_climbs uses so the cost is one already-paid sweep.
-    full_coords = [(la, lo) for la, lo in zip(lats, lons)]
-    dense = densify_polyline(full_coords, stride_m=25.0)
-    if dense:
-        covered = sum(1 for la, lo in dense if dem.covers(la, lo))
-        coverage_pct = 100.0 * covered / len(dense)
+    # Drop unverified (NaN) deltas from the verdict math, but count them as
+    # gaps so an uncovered declared climb pushes the verdict to "high".
+    deltas = [v.delta_pp for v in verifications if not math.isnan(v.delta_pp)]
+    n_unverified = sum(1 for v in verifications if math.isnan(v.verified_peak_pct))
+    verdict = classify_verdict(deltas, missed=len(missed) + n_unverified)
+
+    # Pick baseline for the stitched profile: full-route DEM samples when
+    # coverage is solid, GPX altitudes otherwise. Climb fine-resamples
+    # (5m stride) get laid on top via stitch_profile in either case.
+    use_dem_baseline = bool(dem_elevs) and coverage_pct >= DEM_BASELINE_MIN_COVERAGE
+    if use_dem_baseline:
+        baseline_d, baseline_e = list(dem_dists), list(dem_elevs)
     else:
-        coverage_pct = 0.0
+        # The fallback used to be invisible — only the `backend` string in the
+        # Fidelity Report hinted at it. Surface it on stderr so a terminal run
+        # sees the warning at run-time, and the report markdown gets a callout
+        # via embed_in_prediction so a human reader spots it later.
+        if dem_elevs:
+            print(
+                f"verify_climbs: DEM coverage {coverage_pct:.1f}% < "
+                f"{DEM_BASELINE_MIN_COVERAGE:.0f}% threshold — "
+                f"baseline elevation falls back to GPX altitudes "
+                f"(expect ascent under-count on UK lane terrain).",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "verify_climbs: no DEM samples returned for baseline "
+                "— falling back to GPX altitudes.",
+                file=sys.stderr,
+            )
+        baseline_d, baseline_e = list(dists), list(eles)
 
-    # Stitch verified climb samples into the GPX-derived profile so renderers
-    # and downstream tools see the wall, not the smoothed lie.
     climb_segments = [
         (v.km_start * 1000.0, v.km_end * 1000.0, v.verified_route_m, v.verified_elevs)
         for v in verifications if v.verified_route_m
     ]
     if climb_segments:
         stitched_d, stitched_e = stitch_profile(
-            list(dists), list(eles), climb_segments, blend_m=75.0,
+            baseline_d, baseline_e, climb_segments, blend_m=75.0,
         )
     else:
-        stitched_d, stitched_e = list(dists), list(eles)
+        stitched_d, stitched_e = baseline_d, baseline_e
+
+    backend = "local-dem"
+    if use_dem_baseline:
+        backend += " (full-route baseline)"
+    if fallback_count:
+        backend += " + fallback"
 
     return FidelityReport(
         route_name=name,
-        backend="local-dem" + (" + fallback" if fallback_count else ""),
+        backend=backend,
         coverage_pct=coverage_pct,
         climbs=verifications,
         missed_climbs=missed,
@@ -807,6 +863,12 @@ def render_report(report: FidelityReport) -> str:
         for cv in report.missed_climbs:
             # gpx_peak_pct here holds the coarse-pass peak (seeded by
             # detect_missed_climbs from the 100m-window scan).
+            if math.isnan(cv.verified_peak_pct):
+                lines.append(
+                    f"| {cv.km_start:.2f} | {cv.gpx_peak_pct:.1f}% | "
+                    "(unverified) | — |"
+                )
+                continue
             lines.append(
                 f"| {cv.km_start:.2f} | {cv.gpx_peak_pct:.1f}% | "
                 f"**{cv.verified_peak_pct:.1f}%** | "
@@ -849,12 +911,263 @@ _GPX_PACING_BLOCK = re.compile(
 )
 
 
+# Coverage threshold for promoting full-route DEM samples to the stitched
+# baseline. Below this, the verifier falls back to GPX altitudes (which under-
+# count UK lane terrain — see calibration log 2026-06-13 Lesson 1). Promoted
+# to module level so verify_route and embed_in_prediction share the same
+# constant and can produce matching stderr + markdown warnings.
+DEM_BASELINE_MIN_COVERAGE = 80.0
+
+
+_ASCENT_LINE = re.compile(
+    r"^- \*\*Ascent\*\*: (\d+) m(?: \(hi-fi resampled; GPX: (\d+) m\))?$",
+    re.MULTILINE,
+)
+
+# Per-climb GPX section in the prediction body. Once a Fidelity Report exists
+# with verified pacing, this whole section becomes redundant — the Fidelity
+# tables carry length / gain / avg / max plus hi-fi pacing on the same climbs.
+# Match from the `## Climbs (N)` header to end-of-document (Climbs is the
+# last section format_markdown emits).
+_GPX_CLIMBS_SECTION = re.compile(
+    r"\n## Climbs \(\d+\)\n.*\Z",
+    re.DOTALL,
+)
+
+# Coverage-fallback callout, prepended to the doc when DEM coverage was too
+# low for a full-route baseline. Matches the stock + already-inserted forms so
+# re-running is idempotent.
+_COVERAGE_WARNING_BLOCK = re.compile(
+    r"<!-- BEGIN COVERAGE-WARN -->.*?<!-- END COVERAGE-WARN -->\n?",
+    re.DOTALL,
+)
+
+
+# Markers for the TSS / moving-time block in the Summary section.
+# Mirrors what analyse_gpx.format_markdown emits. The optional annotation
+# group is permissive (any content that ends with "GPX: ~NNN") so re-running
+# stays idempotent across annotation variants ("hi-fi resampled",
+# "hi-fi resampled + terrain-adjusted", etc.).
+_MOVING_TIME_LINE = re.compile(
+    r"^- \*\*Total moving time\*\*: ~([\d.]+) h"
+    r"(?: \([^)]*GPX: ~([\d.]+) h\))?$",
+    re.MULTILINE,
+)
+_TSS_IF_LINE = re.compile(
+    r"^- \*\*TSS at IF (0\.\d+)\*\* (\([^)]+\)): ~(\d+)"
+    r"(?: \([^)]*GPX: ~(\d+)\))?$",
+    re.MULTILINE,
+)
+_WALL_DENSITY_LINE = re.compile(
+    r"^- \*\*Wall density\*\*: [^\n]+$",
+    re.MULTILINE,
+)
+
+
+def _hifi_total_ascent_m(elevs: list[float], w: int = 9) -> int:
+    """Same smooth + positive-diff sum used by analyse_gpx, on stitched elevs."""
+    n = len(elevs)
+    if n < 2:
+        return 0
+    ww = min(w, n)
+    half = ww // 2
+    sm = [0.0] * n
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        sm[i] = sum(elevs[lo:hi]) / (hi - lo)
+    return int(round(sum(max(0.0, sm[i] - sm[i - 1]) for i in range(1, n))))
+
+
+def _wall_density_m_per_km(
+    report: "FidelityReport", distance_km: float
+) -> float | None:
+    """Meters of route ridden at ≥8% grade, divided by route distance (km).
+
+    Sums `length_above_8` across all verified climbs (both `report.climbs`
+    and `report.missed_climbs` — missed climbs are still verified, just not
+    originally declared by GPX find_climbs). Returns `None` when no verified
+    climbs exist (e.g. DEM coverage too low) — caller should skip the
+    terrain adjustment in that case rather than guess.
+
+    Why this metric over `ascent_per_km`:
+      Richmond Park and Lost Lane #21 both score ~10 m/km in ascent rate,
+      but Richmond's "climbs" are 2–4% shallow rolls while Lost Lane #21
+      has real 10–12% wall pitches. The IF impact is fundamentally different,
+      and the rolling-shallow vs punchy-wall distinction is exactly what
+      `length_above_8` captures. Same reading of "0 m/km at ≥8%" for
+      Richmond → no terrain lift; "5.9 m/km" for Lost Lane → terrain lift.
+    """
+    all_climbs = list(report.climbs) + list(report.missed_climbs)
+    if not all_climbs:
+        return None
+    walls_m = sum(getattr(c, "length_above_8", 0.0) for c in all_climbs)
+    return walls_m / max(distance_km, 1.0)
+
+
+def _wall_density_multiplier(wall_density_m_per_km: float) -> float:
+    """Lift the predicted IF and moving time when terrain forces surges.
+
+    Calibration anchor (2026-06-13 Lost Lane #21):
+      - 5.9 m/km of route at ≥8% grade
+      - Route predicted IF 0.65–0.75; actual rode IF 0.80
+      - Lift factor ~1.10 captures the terrain-only portion of the surge
+        load. The remaining 0.10 in 1.23 ratio is partner factor (Thomas),
+        handled separately in USER_PROFILE.md § Riding partners.
+
+    Map:
+      0 m/km     → 1.00 (smooth tarmac + shallow rolls — Richmond Park)
+      6 m/km     → 1.10 (typical UK lane Saturday — Lost Lane #21)
+      12 m/km    → 1.20 (notably wall-dense)
+      20+ m/km   → 1.30 (mountainous; capped)
+
+    One data point so far (Lost Lane #21). Curve to be refit when 2–3
+    further mixed-terrain rides are logged.
+    """
+    return min(1.30, 1.0 + 0.017 * max(0.0, wall_density_m_per_km))
+
+
+def _rewrite_tss_block_from_stitched(
+    text: str, report: FidelityReport
+) -> str:
+    """Re-run analyse_gpx.find_climbs + estimate_tss on the verified hi-fi
+    (stitched) elevation profile, then rewrite the moving-time and TSS-at-IF
+    lines in the Summary block, preserving GPX values in parens
+    (same pattern as `_ASCENT_LINE`). Also annotates the block with a
+    wall-density-aware terrain-adjusted IF band.
+
+    Re-running is idempotent: the regexes match both the stock and the
+    already-rewritten forms; gating skips no-op replacements.
+
+    Lazy imports keep verify_climbs lightweight at module load. analyse_gpx
+    already imports verify_climbs lazily on its own side, so no circular
+    import is introduced.
+    """
+    if not (report.stitched_dists and report.stitched_elevs):
+        return text
+
+    import numpy as np
+    from analyse_gpx import find_climbs, estimate_tss
+
+    stitched_d = np.asarray(report.stitched_dists, dtype=float)
+    stitched_e = np.asarray(report.stitched_elevs, dtype=float)
+    if len(stitched_d) < 50 or stitched_d[-1] < 1000:
+        return text
+
+    distance_km = float(stitched_d[-1]) / 1000.0
+    hifi_climbs = find_climbs(stitched_d, stitched_e)
+    hifi_tss = estimate_tss(distance_km, hifi_climbs, target_if=0.65)
+    raw_hours = float(hifi_tss["estimated_total_hours"])
+
+    # Wall-density multiplier compresses both intensity (NP surges) and time
+    # (slower flats due to corners + descents + narrow lanes). Lost Lane #21
+    # (2026-06-13) calibration: predicted 2.59 h / IF 0.65–0.75 / TSS 109–146;
+    # actual 3.08 h / IF 0.80 / TSS 193. Hi-fi recompute alone only moved
+    # 2.59 → 2.65 h because estimate_tss assumes 25 km/h on flats — but UK
+    # lane terrain pushes the effective flat-section speed down. The same
+    # wall-density factor that lifts IF should slow time by a similar amount.
+    #
+    # Metric: meters of route at ≥8% grade per km of route. Differentiates
+    # punchy-wall terrain from rolling-shallow terrain at the same overall
+    # ascent rate (see _wall_density_m_per_km).
+    wall_density = _wall_density_m_per_km(report, distance_km)
+    mult = _wall_density_multiplier(wall_density) if wall_density is not None else 1.0
+    new_hours = round(raw_hours * mult, 2) if mult > 1.001 else raw_hours
+    # Re-derive the IF-band TSS from the adjusted hours so the band, the
+    # moving-time line, and the wall-density annotation all stay self-consistent.
+    new_tss = {
+        "0.65": int(round(new_hours * 0.65 ** 2 * 100)),
+        "0.70": int(round(new_hours * 0.70 ** 2 * 100)),
+        "0.75": int(round(new_hours * 0.75 ** 2 * 100)),
+    }
+
+    annot = (
+        "hi-fi resampled + terrain-adjusted"
+        if mult > 1.001
+        else "hi-fi resampled"
+    )
+
+    # 1. Moving-time line
+    mtm = _MOVING_TIME_LINE.search(text)
+    if mtm:
+        gpx_hours = float(mtm.group(2)) if mtm.group(2) else float(mtm.group(1))
+        if abs(new_hours - gpx_hours) >= max(0.15, 0.05 * gpx_hours):
+            text = _MOVING_TIME_LINE.sub(
+                f"- **Total moving time**: ~{new_hours} h "
+                f"({annot}; GPX: ~{gpx_hours} h)",
+                text, count=1,
+            )
+
+    # 2. Three TSS-at-IF lines
+    def _replace_tss(m):
+        if_val = m.group(1)
+        label = m.group(2)
+        existing = int(m.group(3))
+        gpx_tss = int(m.group(4)) if m.group(4) else existing
+        if if_val not in new_tss:
+            return m.group(0)
+        adj_tss = new_tss[if_val]
+        if abs(adj_tss - gpx_tss) < max(5, int(0.05 * gpx_tss)):
+            return m.group(0)
+        return (
+            f"- **TSS at IF {if_val}** {label}: ~{adj_tss} "
+            f"({annot}; GPX: ~{gpx_tss})"
+        )
+
+    text = _TSS_IF_LINE.sub(_replace_tss, text)
+
+    # 3. Wall-density annotation (single line after the last TSS line).
+    if wall_density is None:
+        density_line = (
+            "- **Wall density**: not measured (no verified climbs in the "
+            "Fidelity Report — DEM coverage too low to count walls). "
+            "No terrain adjustment applied; treat the TSS band as an "
+            "under-bound on hilly terrain."
+        )
+    elif mult > 1.001:
+        if_lo = round(0.65 * mult, 2)
+        if_hi = round(0.75 * mult, 2)
+        tss_lo = int(round(new_hours * if_lo ** 2 * 100))
+        tss_hi = int(round(new_hours * if_hi ** 2 * 100))
+        density_line = (
+            f"- **Wall density**: {wall_density:.1f} m/km at ≥8% grade "
+            f"→ terrain lifts IF ×{mult:.2f} and time ×{mult:.2f}. "
+            f"Expected IF {if_lo:.2f}–{if_hi:.2f}, TSS ~{tss_lo}–{tss_hi} "
+            f"(add a riding-partner factor on top — see USER_PROFILE.md § Riding partners)."
+        )
+    else:
+        density_line = (
+            f"- **Wall density**: {wall_density:.1f} m/km at ≥8% grade "
+            "(below threshold — smooth tarmac / shallow rolls; no terrain "
+            "adjustment, base hi-fi numbers stand)."
+        )
+
+    if _WALL_DENSITY_LINE.search(text):
+        text = _WALL_DENSITY_LINE.sub(density_line, text, count=1)
+    else:
+        last_tss = None
+        for m in _TSS_IF_LINE.finditer(text):
+            last_tss = m
+        if last_tss:
+            insert_at = last_tss.end()
+            text = text[:insert_at] + "\n" + density_line + text[insert_at:]
+
+    return text
+
+
 def embed_in_prediction(md_path: Path, report: FidelityReport) -> None:
     block = render_report(report)
     md_path = Path(md_path)
     text = md_path.read_text() if md_path.exists() else ""
-    if any(c.verified_pacing for c in report.climbs):
+    has_verified_pacing = any(c.verified_pacing for c in report.climbs)
+    if has_verified_pacing:
         text = _GPX_PACING_BLOCK.sub("", text)
+        # Drop the entire `## Climbs (N)` section: the Fidelity Report above
+        # now carries length / gain / avg / max + hi-fi pacing for the same
+        # climbs. Keeping both creates a visible inconsistency where the body
+        # `### Climb` headers still show GPX-derived numbers
+        # (handover 2026-06-13 follow-up B).
+        text = _GPX_CLIMBS_SECTION.sub("\n", text)
     if _FIDELITY_BLOCK.search(text):
         text = _FIDELITY_BLOCK.sub(block, text)
     else:
@@ -864,6 +1177,57 @@ def embed_in_prediction(md_path: Path, report: FidelityReport) -> None:
             text = text[:insert_at] + "\n" + block + "\n" + text[insert_at:]
         else:
             text = block + "\n" + text
+
+    # Coverage-fallback callout. Visible above the Fidelity Report when DEM
+    # coverage was too low to use a full-route baseline — flags that the
+    # numbers in the prediction may under-count ascent.
+    using_dem_baseline = (
+        bool(report.stitched_elevs)
+        and report.coverage_pct >= DEM_BASELINE_MIN_COVERAGE
+    )
+    text = _COVERAGE_WARNING_BLOCK.sub("", text)
+    if report.stitched_elevs and not using_dem_baseline:
+        warn_block = (
+            "<!-- BEGIN COVERAGE-WARN -->\n"
+            f"> ⚠️ **DEM coverage {report.coverage_pct:.1f}% below "
+            f"{DEM_BASELINE_MIN_COVERAGE:.0f}% threshold.** "
+            "Baseline elevation falls back to GPX altitudes — expect ascent "
+            "and TSS to under-count, especially on UK lane terrain. Consider "
+            "re-running after downloading the missing DEM tiles "
+            "(`fetch_dem_tiles.py` or the interactive prompt).\n"
+            "<!-- END COVERAGE-WARN -->\n"
+        )
+        m_fid = _FIDELITY_BLOCK.search(text)
+        if m_fid:
+            insert_at = m_fid.start()
+            text = text[:insert_at] + warn_block + "\n" + text[insert_at:]
+        else:
+            m_h1 = re.search(r"^# .+\n", text, re.MULTILINE)
+            if m_h1:
+                insert_at = m_h1.end()
+                text = text[:insert_at] + "\n" + warn_block + text[insert_at:]
+
+    if report.stitched_elevs:
+        hifi_asc = _hifi_total_ascent_m(list(report.stitched_elevs))
+
+        # Rewrite the Ascent headline (existing behaviour).
+        m = _ASCENT_LINE.search(text)
+        if m:
+            gpx_asc = int(m.group(2)) if m.group(2) else int(m.group(1))
+            if abs(hifi_asc - gpx_asc) >= max(20, int(0.05 * gpx_asc)):
+                replacement = (
+                    f"- **Ascent**: {hifi_asc} m "
+                    f"(hi-fi resampled; GPX: {gpx_asc} m)"
+                )
+                text = _ASCENT_LINE.sub(replacement, text, count=1)
+
+        # Rewrite the TSS estimate block from the hi-fi profile,
+        # plus a wall-density-aware terrain-adjusted IF annotation
+        # (closes the gap between predicted IF 0.65–0.75 and actual
+        # IF 0.80 on hilly UK lane routes — see calibration log
+        # 2026-06-13 Lesson 3 in the handover).
+        text = _rewrite_tss_block_from_stitched(text, report)
+
     md_path.write_text(text)
 
 

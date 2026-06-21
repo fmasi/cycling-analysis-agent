@@ -43,6 +43,22 @@ def test_sample_polyline_batches_and_returns_floats(tmp_path):
     assert post.call_count == 1
 
 
+def test_length_mismatch_raises(tmp_path):
+    # API returns fewer elevations than points → refuse to misalign coords.
+    k = tmp_path / "gpxz.key"
+    k.write_text("test-api-key")
+    c = GPXZClient(key_path=k)
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {"results": [{"elevation": 100.0}]}  # 1 for 2
+
+    import pytest
+    with patch("elevation_fallback.requests.post", return_value=fake_resp):
+        with pytest.raises(RuntimeError):
+            c.sample_polyline([(51.5, -0.1), (51.6, -0.1)])
+
+
 def test_sample_polyline_chunks_over_512(tmp_path):
     k = tmp_path / "gpxz.key"
     k.write_text("test-api-key")

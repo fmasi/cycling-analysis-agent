@@ -18,8 +18,12 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import math
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from climb_detect import median_filter_1d  # noqa: E402,F401
 
 from adjustText import adjust_text
 
@@ -248,16 +252,6 @@ def categorise(length_km, avg_grade_pct):
         if idx >= thr:
             return name, pts, badge, fill, idx
     return 'uncat', 0, '#888888', '#E0E0E0', idx
-
-
-def median_filter_1d(arr, size=5):
-    if size < 2 or len(arr) < size:
-        return np.asarray(arr, dtype=float)
-    half = size // 2
-    out = np.empty(len(arr), dtype=float)
-    for i in range(len(arr)):
-        out[i] = np.median(arr[max(0, i-half):min(len(arr), i+half+1)])
-    return out
 
 
 def grade_profile(d, e, win_m=50, median_size=5, step_m=10):

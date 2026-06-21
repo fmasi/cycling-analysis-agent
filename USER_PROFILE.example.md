@@ -34,25 +34,65 @@ fitness:
   rest_hr_bpm: 55                 # Used by Karvonen HR zones
   max_hr_uncertainty: <e.g. "±5">
 
-physics:
-  bike_weight_kg: 9.0
-  kit_weight_kg: 3.0              # Shoes, helmet, bottles, kit — for system weight
-  system_weight_kg: 87.0          # body + bike + kit, used for speed/power
-  cda: 0.30                       # Coefficient of drag × frontal area
-  cda_range: <e.g. "0.28–0.32">
-  fr_split_front_pct: 48          # Front-wheel weight % (Silca's 48/52 default)
-  cda_position: <e.g. "hoods, neutral">
-  drivetrain_efficiency: 0.97     # 0.97 for 2x/3x; 0.98 for direct-drive
-  crr: 0.0055                     # Default rolling resistance (intermediate pressure)
-  air_density_kg_m3: 1.225        # Sea level, 15°C
-  gravity_m_s2: 9.81
-  wheel_circ_m: 2.155             # 700c × 32mm — adjust per tyre
+# Per-bike physics live under a `bikes:` registry; `default_bike` names the
+# active one. scripts/profile.py folds the active bike's values into the
+# physics constants (SYSTEM_WEIGHT_KG, FR_SPLIT_FRONT_PCT, CdA, …); the full
+# typed API (gearing, surfaces, e-assist) is scripts/bike_config.py:load_bike().
+# Override the bike per-run with `--bike <slug>` where supported.
+default_bike: roadbike
+
+bikes:
+  roadbike:
+    name: <Make / model>
+    bike_weight_kg: 9.0
+    system_weight_kg_default: 87.0   # body + bike + kit, used for speed/power
+    fr_split: "48/52"                # Front/rear weight split (Silca default 48/52)
+    cda: 0.30                        # Coefficient of drag × frontal area
+    cda_range: "0.28-0.32"
+    drivetrain_efficiency: 0.97      # 0.97 for 2x/3x; 0.98 for direct-drive
+    wheel_circ_m: 2.155              # 700c × 32mm — adjust per tyre
+    has_power_meter: true
+    tyres:
+      model: <tyre model>
+      size_mm: 32
+    crr_by_surface:                  # rolling resistance per surface
+      tarmac: 0.0055                 # intermediate pressure; 0.0050 latex/TPU optimal
+    surfaces_supported: [tarmac]
+    # Optional: gearing for min-gear/cadence pacing
+    # gearing:
+    #   chainrings_t: [34, 50]
+    #   cassette_t: [11, 12, 13, 14, 15, 17, 19, 21, 24, 28, 32]
+    # Optional: e-assist block for motorised bikes — see bike_config.AssistConfig
+
+# Environment constants (not bike-specific). Defaults applied if omitted:
+# air_density_kg_m3: 1.225  (sea level, 15°C); gravity_m_s2: 9.81;
+# crr: 0.0055 (fallback when a surface isn't in crr_by_surface).
+#
+# Single-bike setups may instead use a flat top-level `physics:` block
+# (bike_weight_kg / system_weight_kg / cda / fr_split_front_pct / …) — the
+# loader still supports it for backward compatibility.
 
 training_load:
   ctl: 0                          # Chronic Training Load — 42-day EMA of TSS
   atl: 0                          # Acute Training Load — 7-day EMA of TSS
   tsb: 0                          # Training Stress Balance — yesterday CTL − yesterday ATL
   source: <e.g. "TrainingPeaks AM YYYY-MM-DD">
+
+# Riding-partner (peer) registry — flat `peer_<lowername>:` sections,
+# consumed by scripts/profile.py:load_peer() and scripts/run_peer_compare.sh
+# (the rider-vs-peer FIT comparison wrapper). Add one block per peer.
+# Qualitative notes (style, strengths, planning rules) live in the
+# "Riding partners" section in the markdown body below.
+# Example block:
+#
+# peer_<name>:
+#   label: <Display name>
+#   ftp_w: 200                    # Your best calibrated estimate of their FTP
+#   ftp_w_stored: 220             # Optional — what their head unit reports
+#   ftp_source: garmin-auto       # test | garmin-auto | self-declared | unknown
+#   weight_kg: 75                 # Estimated; used for W/kg comparisons
+#   bike_summary: "<one-line bike spec relevant to riding-together comparisons>"
+#   last_compared_ride: "<YYYY-MM-DD short route name>"
 
 goals:
   primary_event: <Event name>

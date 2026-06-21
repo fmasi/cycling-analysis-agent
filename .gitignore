@@ -31,6 +31,17 @@ secrets/
 .claude/
 !.claude/settings.json
 
+# OpenClaw layered-agent overlay — runtime host files, not part of this
+# framework. They sit in the workspace root but belong to the OpenClaw shell.
+/.openclaw/
+/AGENTS.md
+/SOUL.md
+/IDENTITY.md
+/HEARTBEAT.md
+/TOOLS.md
+/USER.md
+/LAYERED_AGENT_SETUP.md
+
 # Generated charts (regenerable from data)
 *.png
 *.jpg

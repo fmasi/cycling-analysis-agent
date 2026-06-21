@@ -8,7 +8,7 @@ This file is the **logic layer** — workflows, physics formulas, principles, an
 
 ## How this framework works
 
-**Personal rider data lives in `USER_PROFILE.md` at the repo root.** That file holds the rider's identity, fitness numbers (FTP, MAP, LTHR, max HR), physics constants (weight, CdA, F/R split), equipment specifics, fatigue state, goals, and ride history.
+**Personal rider data lives in `USER_PROFILE.md` at the repo root.** That file holds the rider's identity, fitness numbers (FTP, MAP, LTHR, max HR), physics constants (weight, CdA, F/R split), equipment specifics, fatigue state, goals, ride history, and the **riding-partner (peer) registry** — flat `peer_<name>:` YAML blocks consumed by `scripts/profile.py:load_peer()` and the rider-vs-peer comparison wrapper.
 
 **At the start of every session, read `USER_PROFILE.md`.** It is your source of truth for who the rider is and their current state.
 
@@ -56,9 +56,14 @@ When the rider provides a GPX file and the verifier is enabled (default):
    - **Gradient profile** table — mean-max curve at peak-25m / 100m / 500m / 1km windows (spatial analogue of a power-duration curve)
    - **Walls** table — every segment ≥ 10% sustained ≥ 30m with offset, length, peak grade, position-in-climb
    - **Hi-fi pacing** table — physics on verified gradients
-4. The body's per-climb GPX pacing block is auto-stripped when hi-fi pacing exists (markers `<!-- BEGIN/END GPX-PACING -->`).
-5. To skip verification (offline use): `python scripts/analyse_gpx.py <gpx> --save --no-verify`
-6. To force GPX-only chart even when hi-fi exists: `--gpx-only-chart`.
+4. The body's per-climb GPX pacing block is auto-stripped when hi-fi pacing exists (markers `<!-- BEGIN/END GPX-PACING -->`). The entire `## Climbs (N)` section in the body is also dropped — the Fidelity Report above carries length / gain / avg / max + hi-fi pacing for the same climbs.
+5. **Summary block rewrites** (in addition to the Fidelity block):
+   - **Ascent headline** is rewritten from the hi-fi stitched profile (GPX value preserved in parens: `- **Ascent**: 619 m (hi-fi resampled; GPX: 460 m)`). Gate: ≥ 20 m or ≥ 5% delta.
+   - **Moving time + TSS-at-IF lines** are re-derived by running `find_climbs` + `estimate_tss` on the stitched profile, then multiplied by a **wall-density terrain multiplier** (Lost Lane #21 2026-06-13 calibration: 5.9 m/km at ≥ 8% grade → ×1.10 on both IF and moving time). Output annotated `(hi-fi resampled + terrain-adjusted; GPX: ~109)`.
+   - **Wall density line** appended below the TSS block: `- **Wall density**: 5.9 m/km at ≥ 8% grade → terrain lifts IF ×1.10 and time ×1.10. Expected IF 0.72–0.83, TSS ~151–201 ...` — the band that should bound the realistic ride. Falls back to "no terrain adjustment" annotation when wall_density is 0 or no verified climbs exist.
+   - **DEM-coverage callout** prepended above the Fidelity block when coverage < 80% (the GPX-fallback baseline threshold) — explicit `⚠️` warning that ascent will under-count.
+6. To skip verification (offline use): `python scripts/analyse_gpx.py <gpx> --save --no-verify`
+7. To force GPX-only chart even when hi-fi exists: `--gpx-only-chart`.
 
 **Acquiring DEM tiles:**
 - **FR — automatic (Géoplateforme)**: `python scripts/fetch_dem_tiles.py --region fontainebleau` (or `--country fr --dept D077 --gpx <route>`). Downloads a per-department .7z archive (~3 GB), extracts only the bbox-relevant .asc tiles, converts to LZW-compressed GeoTIFF in EPSG:2154. Supports HTTP Range resume. Re-extract from a cached .7z with `--archive <path>`.
@@ -95,6 +100,15 @@ When the rider and coach agree changes to the current week's plan (swap days, ad
 1. Update the **Current week plan** section in `USER_PROFILE.md` in the same turn — table + decisions log + last-updated date
 2. Treat TrainingPeaks as the rider-side source of truth; this section is the coach-side mirror so other tools (e.g. OpenClaw / local LLMs reading this folder) and resumed sessions see the live state
 3. At the start of each new calendar week, replace the table with the new week's plan and archive notable decisions into the relevant ride analysis or memory if they outlive the week
+
+When the rider provides a riding partner's (peer's) FIT for the same ride:
+1. Use the wrapper: `scripts/run_peer_compare.sh <peer_name> <path/to/peer.fit> [route_gpx]`
+2. The wrapper auto-discovers the rider's matching FIT by date in `rides/fit/`, looks up the peer's labels / FTP / weight / FTP-source caveat from the **peer registry** (`peer_<name>:` blocks in `USER_PROFILE.md` frontmatter), and runs `compare_riders.py` with the right flags.
+3. Output goes to `rides/analyses/<YYYY-MM-DD>-<route-slug>-vs-<peer>.md` and contains: headline metrics table, peak power curve, FTP estimation (with caveats for Garmin auto-FTP / first-PM-ride cases), aerobic EF, time-in-zones, per-climb comparison (using verified climb spans when `route_gpx` is passed), flat-section comparison, flat-attack tally.
+4. After the auto-content lands, hand-write a `## Synthesis` section + any specific episode breakdowns (chase patterns, drafting windows, etc.) directly into the markdown. The wrapper **detects an existing hand-curated analysis** (file > 6 KB AND contains `## Synthesis`) and writes fresh re-runs to a `.auto-<HHMMSS>.md` snapshot instead — never overwrites synthesis.
+5. **Registering a new peer**: add a `peer_<lowername>:` YAML block to `USER_PROFILE.md` frontmatter (same flat 2-level shape as other sections). Required keys: `label`, `ftp_w` (calibrated best estimate), `weight_kg`. Useful keys: `ftp_w_stored` (what's on their head unit, if different from your estimate), `ftp_source` (`test` | `garmin-auto` | `self-declared` | `unknown`), `bike_summary`, `last_compared_ride`. `scripts/profile.py` exposes `load_peer(name)` and `list_peers()` helpers; the wrapper uses them.
+6. The registry `ftp_w` overrides the FIT-stored value for analysis purposes (the FIT-stored value is still surfaced in the FTP-estimation section with the appropriate caveat). This matters when the peer's head unit shows Garmin's auto-FTP, which runs hot for first-power-meter users.
+7. Qualitative observations about the peer (riding style, where they're strong, planning rules) go in the **Riding partners** section in the markdown body of `USER_PROFILE.md`, not in the YAML registry.
 
 ---
 

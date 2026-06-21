@@ -26,23 +26,16 @@ import shapefile  # pyshp
 from pyproj import CRS, Transformer
 
 
-def bbox_from_gpx(path: Path) -> tuple[float, float, float, float]:
-    tree = ET.parse(str(path))
-    root = tree.getroot()
-    ns = {"g": root.tag.split("}")[0].strip("{")}
-    pts = root.findall(".//g:trkpt", ns)
-    if not pts:
-        raise SystemExit(f"No trackpoints in {path}")
-    lats = [float(p.attrib["lat"]) for p in pts]
-    lons = [float(p.attrib["lon"]) for p in pts]
-    return (min(lons), min(lats), max(lons), max(lats))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from geo_util import bbox_from_gpx  # noqa: E402,F401  (shared; re-exported)
 
 
 def wgs84_bbox_to_osgb_polygon(
     bbox: tuple[float, float, float, float], buffer_m: float = 0.0,
 ) -> list[tuple[float, float]]:
     """Project the WGS84 bbox corners to OSGB36, expand by buffer_m, and
-    return a closed CCW polygon ring as (easting, northing) pairs.
+    return a closed CLOCKWISE polygon ring as (easting, northing) pairs.
+    (Clockwise is required — see the outer-ring note on the return statement.)
 
     Projecting only the 4 corners is fine here — the bbox is tiny relative
     to the curvature of the British National Grid, so the projected polygon
