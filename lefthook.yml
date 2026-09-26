@@ -1,0 +1,12 @@
+pre-commit:
+  parallel: true
+  commands:
+    shell:
+      glob: "*.sh"
+      run: shellcheck {staged_files}
+    secrets:
+      run: gitleaks git --staged --no-banner
+
+pre-push:
+  commands:
+    ci: { run: just ci }   # skip once with: git push --no-verify
