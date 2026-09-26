@@ -140,6 +140,22 @@ From [`examples/route-prediction.example.md`](examples/route-prediction.example.
 Elevation fallback: [GPXZ.io](https://www.gpxz.io/) (non-commercial tier). Map-matching: [OSRM](https://project-osrm.org/).
 Training-load conventions: TrainingPeaks. Tyre model: extrapolated from Silca's published data.
 
+## Local CI
+
+Tests run against the existing `cycling` conda env (see `environment.yml`;
+`scripts/setup-container-conda.sh` creates it if missing — `just`/CI never
+create or modify it):
+
+```bash
+lefthook install        # activate pre-commit/pre-push hooks for this clone
+just ci                 # mirrors the tests workflow: conda run -n cycling pytest ...
+```
+
+```bash
+gh pr create --draft
+gh pr ready              # triggers the one CI run for this PR
+```
+
 ## Privacy by design
 
 The framework is **rider-agnostic**: all personal data lives in a gitignored `USER_PROFILE.md` plus six
