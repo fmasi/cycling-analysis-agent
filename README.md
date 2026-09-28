@@ -142,18 +142,22 @@ Training-load conventions: TrainingPeaks. Tyre model: extrapolated from Silca's 
 
 ## Local CI
 
-Tests run against the existing `cycling` conda env (see `environment.yml`;
-`scripts/setup-container-conda.sh` creates it if missing — `just`/CI never
-create or modify it):
+`just ci` runs exactly what CI runs: ruff (lint + SAST), workflow lint, the test suite with its
+coverage floor, and pip-audit. Locally it uses the existing `cycling` conda env (see
+`environment.yml`; `scripts/setup-container-conda.sh` creates it if missing). `just` and CI never
+create or modify it, so after `environment.yml` gains a tool, update the env once:
+`conda env update -n cycling -f environment.yml`. How changes land (hooks, draft PR, the one
+Claude review and its merge gate) is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ```bash
-lefthook install        # activate pre-commit/pre-push hooks for this clone
-just ci                 # mirrors the tests workflow: conda run -n cycling pytest ...
+brew install just lefthook gitleaks actionlint zizmor shellcheck   # once
+lefthook install        # pre-commit: ruff, gitleaks, shellcheck; pre-push: just ci
+just ci                 # exactly what the tests workflow runs
 ```
 
 ```bash
 gh pr create --draft
-gh pr ready              # triggers the one CI run for this PR
+gh pr ready              # runs CI once, plus the one Claude review
 ```
 
 ## Privacy by design

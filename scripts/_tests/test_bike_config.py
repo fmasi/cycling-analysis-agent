@@ -6,7 +6,6 @@ fixture or an inline literal), never the real USER_PROFILE.md.
 import pytest
 
 from bike_config import (
-    BikeConfig,
     load_bike,
     list_bikes,
     default_bike_slug,

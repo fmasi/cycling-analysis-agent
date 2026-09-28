@@ -34,8 +34,8 @@ import numpy as np
 # Import physics model and profile from same directory
 sys.path.insert(0, str(Path(__file__).parent))
 from physics_model import (
-    FTP, MAP_WORKING, predict_speed, ZONES,
-    SYSTEM_WEIGHT_KG, RIDER_WEIGHT_KG
+    FTP, ZONES,
+    RIDER_WEIGHT_KG
 )
 from profile import MAX_HR_BPM, REST_HR_BPM
 # Climb-detection primitives live in climb_detect (shared with analyse_gpx).
@@ -350,7 +350,7 @@ def analyse(path):
         result['climbs'] = climbs
 
     # Lap structure (interval detection)
-    interval_laps = [l for l in laps if l.get('avg_power', 0) > FTP * 0.95]
+    interval_laps = [lap for lap in laps if lap.get('avg_power', 0) > FTP * 0.95]
     result['intervals_detected'] = len(interval_laps)
 
     return result

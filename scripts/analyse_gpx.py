@@ -12,7 +12,6 @@ estimates TSS for a given target intensity, and produces a pacing narrative.
 
 import argparse
 import json
-import math
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -23,8 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from physics_model import (
     FTP, MAP_WORKING, AC_FRESH_EST, predict_speed, vam_at_power,
-    power_for_60rpm_in_lowest_gear, SYSTEM_WEIGHT_KG,
-    speed_at_cadence_rpm
+    power_for_60rpm_in_lowest_gear
 )
 from gearing import suggest_gear, CLIMBING_CADENCE_RPM
 from bike_cli import add_bike_args, resolve_bike, resolve_surface
@@ -36,7 +34,7 @@ from geo_util import haversine_m  # noqa: E402,F401  (shared; re-exported)
 
 def parse_gpx(path):
     """Extract trackpoints from a GPX file."""
-    tree = ET.parse(str(path))
+    tree = ET.parse(str(path))  # noqa: S314 -- the rider's own GPX files; ElementTree never fetches external entities, expat >= 2.4.1 caps entity expansion
     root = tree.getroot()
     ns_uri = root.tag.split('}')[0].strip('{')
     ns = {'gpx': ns_uri}

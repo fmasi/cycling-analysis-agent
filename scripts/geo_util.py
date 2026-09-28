@@ -24,7 +24,7 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 def bbox_from_gpx(path: Path) -> tuple[float, float, float, float]:
     """Return (min_lon, min_lat, max_lon, max_lat) over all trackpoints."""
-    tree = ET.parse(str(path))
+    tree = ET.parse(str(path))  # noqa: S314 -- the rider's own GPX files; ElementTree never fetches external entities, expat >= 2.4.1 caps entity expansion
     root = tree.getroot()
     ns = {"g": root.tag.split("}")[0].strip("{")}
     pts = root.findall(".//g:trkpt", ns)

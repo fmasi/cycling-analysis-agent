@@ -19,9 +19,7 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -256,11 +254,13 @@ def load_rider(label: str, fit_path: Path, ftp_w: float | None = None,
 # --------------------------------------------------------------------
 
 def fmt_w(x):
-    if x is None: return "—"
+    if x is None:
+        return "—"
     return f"{int(x)}"
 
 def fmt_f(x, digits=1):
-    if x is None: return "—"
+    if x is None:
+        return "—"
     return f"{x:.{digits}f}"
 
 def render_headline(r1: RiderRide, r2: RiderRide) -> str:
@@ -364,8 +364,10 @@ SEMI_TO_DEG = 180.0 / (1 << 31)
 def _haversine_m(lat1, lon1, lat2, lon2):
     import math
     R = 6371000.0
-    p1 = math.radians(lat1); p2 = math.radians(lat2)
-    dp = math.radians(lat2 - lat1); dl = math.radians(lon2 - lon1)
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
     a = math.sin(dp/2)**2 + math.cos(p1) * math.cos(p2) * math.sin(dl/2)**2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
@@ -405,7 +407,8 @@ def align_two_rides(path1: str, path2: str) -> list[dict]:
 
     rows = []
     for t in common:
-        a = d1[t]; b = d2[t]
+        a = d1[t]
+        b = d2[t]
         la1, lo1 = a.get("position_lat"), a.get("position_long")
         la2, lo2 = b.get("position_lat"), b.get("position_long")
         if None in (la1, lo1, la2, lo2):
@@ -455,7 +458,8 @@ def find_proximity_events(
     d1 = [r["dist1"] for r in rows]
     a1 = [r["alt1"] for r in rows]
     for i in range(n):
-        lo = max(0, i - half); hi = min(n - 1, i + half)
+        lo = max(0, i - half)
+        hi = min(n - 1, i + half)
         if d1[lo] is None or d1[hi] is None or a1[lo] is None or a1[hi] is None:
             continue
         dd = d1[hi] - d1[lo]
@@ -651,8 +655,6 @@ def main() -> int:
     flat_segs = detect_flat_segments(r1.arr, min_duration_s=60,
                                      max_abs_grade_pct=2.0)
     # Aggregate flat stats across all flat segs (combined)
-    flat_total_s = sum((s.km_end - s.km_start) * 1000 / 5.5  # rough placeholder; below
-                       for s in flat_segs)  # not used in output
     flats_combined_r1 = []
     flats_combined_r2 = []
     for seg in flat_segs:
@@ -725,7 +727,7 @@ def main() -> int:
     )
     md.append("## Aerobic efficiency (EF = NP / avg HR)")
     md.append("")
-    md.append(f"| Rider | NP | Avg HR | EF |")
+    md.append("| Rider | NP | Avg HR | EF |")
     md.append("|---|---|---|---|")
     md.append(f"| {r1.label} | {r1.session.get('normalized_power')} W | "
               f"{r1.session.get('avg_heart_rate')} bpm | **{ef1:.2f}** |")
@@ -789,8 +791,8 @@ def main() -> int:
 
     md.append("## Flat attacks")
     md.append("")
-    md.append(f"_Surges defined as power > 120% of each rider's own stored FTP, "
-              f"sustained ≥15s, on grade |≤2%|._")
+    md.append("_Surges defined as power > 120% of each rider's own stored FTP, "
+              "sustained ≥15s, on grade |≤2%|._")
     md.append("")
     md.append(f"- **{r1.label}**: {len(attacks_r1)} flat attacks")
     if attacks_r1:

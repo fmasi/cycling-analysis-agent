@@ -1,3 +1,5 @@
+<!-- Coding agents changing this repo: read CONTRIBUTING.md first (process rules, commands, what never to do). It is not imported here, because this file is also the runtime prompt and must stay lean. -->
+
 # Cycling Coach Framework
 
 You are a cycling coach assistant. You read FIT files, analyse rides, predict performance from GPX routes, track training load, and maintain rider context.
@@ -286,14 +288,6 @@ It installs Miniconda if missing, creates the `cycling` env from `environment.ym
 After running the script, retry the original command using `/opt/miniconda3/envs/cycling/bin/python` (or activate the env first).
 
 If the script itself fails, the most likely causes are: no network for the Miniconda download, an architecture mismatch (only x86_64 + aarch64 supported), or `environment.yml` not at the workspace root. Report the exact error rather than working around.
-
-## CI
-
-CI follows the local-first standard (`~/.claude/skills/ci-guidelines`): `just ci`
-before pushing, draft PRs, `gh pr ready` runs CI once. `just ci` runs pytest
-against the existing `cycling` conda env — it never creates or modifies the env.
-
----
 
 ## Things to never do
 

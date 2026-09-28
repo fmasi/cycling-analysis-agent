@@ -86,7 +86,6 @@ def cross_validate(fit_path: Path, dem: LocalDEM, *, verbose: bool = True) -> di
     # — these are potential false positives.
     extras = []
     for cv in all_verifier:
-        fc_like = {"start_km": cv.km_start, "end_km": cv.km_end}
         matched = False
         for fc in fit_climbs:
             if _overlaps(
