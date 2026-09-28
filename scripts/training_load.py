@@ -25,8 +25,8 @@ import math
 CTL_DECAY_DAYS = 42
 ATL_DECAY_DAYS = 7
 
-CTL_K = 1 - math.exp(-1 / CTL_DECAY_DAYS)  # ≈ 0.02347
-ATL_K = 1 - math.exp(-1 / ATL_DECAY_DAYS)  # ≈ 0.13307
+CTL_K = 1 - math.exp(-1 / CTL_DECAY_DAYS)  # ≈ 0.023528
+ATL_K = 1 - math.exp(-1 / ATL_DECAY_DAYS)  # ≈ 0.133122
 
 
 def project(ctl_start, atl_start, daily_tss):
