@@ -1,12 +1,18 @@
+# Block style only: `{staged_files}` inside a `{ ... }` flow mapping is invalid YAML.
 pre-commit:
   parallel: true
   commands:
+    ruff:
+      glob: "*.py"
+      # Report only, no --fix: some modules re-export names on purpose (physics_model), and an
+      # auto-removed "unused" import would break their importers.
+      run: conda run -n cycling ruff check {staged_files}
+    secrets:
+      run: gitleaks git --staged --redact --no-banner
     shell:
       glob: "*.sh"
       run: shellcheck {staged_files}
-    secrets:
-      run: gitleaks git --staged --no-banner
-
 pre-push:
   commands:
-    ci: { run: just ci }   # skip once with: git push --no-verify
+    ci:
+      run: just ci   # never skipped with --no-verify (CONTRIBUTING.md)

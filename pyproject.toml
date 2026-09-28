@@ -1,8 +1,19 @@
 # Tooling config. The project ships its runtime deps via environment.yml
-# (conda); this file only configures pytest.
+# (conda); this file only configures pytest and coverage.
 [tool.pytest.ini_options]
 testpaths = ["scripts/_tests"]
 # Put scripts/ on sys.path so tests can `import profile`, `import bike_config`,
 # etc. without a per-file sys.path.insert hack.
 pythonpath = ["scripts"]
 addopts = "-q"
+
+[tool.coverage.run]
+# `pytest --cov` (just test) measures the framework scripts, not the tests.
+source = ["scripts"]
+omit = ["scripts/_tests/*"]
+
+[tool.ruff.lint]
+# Pinned to ruff's classic defaults (pyflakes F + pycodestyle E4/E7/E9), so a newer
+# ruff from environment.yml's loose floor can't widen the rule set on its own.
+# `just security` adds the bandit rules (S) on the command line.
+select = ["E4", "E7", "E9", "F"]

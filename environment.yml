@@ -14,6 +14,11 @@ dependencies:
   - pyshp>=2.3
   - pyyaml>=6.0
   - pytest>=7.4
+  # Dev tools that `just ci` and CI run: coverage floor, lint + SAST, dependency CVE scan.
+  - pytest-cov>=5.0
+  - ruff>=0.15
+  - pip-audit>=2.7
+  - filelock>=3.0   # pip-audit's HTTP cache needs it; conda-forge's pip-audit doesn't pull it in
   - pip
   - pip:
     - fitparse>=1.2
