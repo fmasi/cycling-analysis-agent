@@ -3,7 +3,6 @@
 Shared by analyse_climbs.py (FIT) and analyse_gpx.py (GPX). Categorisation
 moved here verbatim from analyse_climbs.py so both tools agree.
 """
-from typing import Optional
 
 # (lower_index_inclusive, name, points, badge_colour, fill_colour)
 # Order matters: iterate top-down, return on first match.

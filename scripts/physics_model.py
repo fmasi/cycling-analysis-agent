@@ -15,10 +15,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from profile import (  # noqa: E402
     FTP,
     MAP_WORKING,
-    AC_FRESH_EST,
-    NM_PEAK,
-    RIDER_WEIGHT_KG,
-    BIKE_WEIGHT_KG,
+    AC_FRESH_EST,  # noqa: F401 -- re-exported: analyse_gpx imports it from here
+    NM_PEAK,  # noqa: F401 -- re-exported with the other rider numbers
+    RIDER_WEIGHT_KG,  # noqa: F401 -- re-exported: analyse_fit imports it from here
+    BIKE_WEIGHT_KG,  # noqa: F401 -- re-exported with the other rider numbers
     SYSTEM_WEIGHT_KG,
     CDA_DEFAULT,
     CRR_DEFAULT,

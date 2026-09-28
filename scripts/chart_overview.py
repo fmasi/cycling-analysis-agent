@@ -32,7 +32,7 @@ from adjustText import adjust_text
 
 def parse_waypoints(gpx_path):
     """Extract <wpt> entries from a GPX file."""
-    tree = ET.parse(str(gpx_path))
+    tree = ET.parse(str(gpx_path))  # noqa: S314 -- the rider's own GPX files; ElementTree never fetches external entities, expat >= 2.4.1 caps entity expansion
     root = tree.getroot()
     ns = {'gpx': root.tag.split('}')[0].strip('{')}
     out = []
@@ -425,7 +425,7 @@ def render_overview(
                 bump = 0
             last_x_end = midk
 
-    grade_handles = [plt.Rectangle((0, 0), 1, 1, color=c, label=l) for l, c in
+    grade_handles = [plt.Rectangle((0, 0), 1, 1, color=c, label=band) for band, c in
                      [('<3%',  '#9ED99E'), ('3–6%',  '#F4C430'),
                       ('6–9%',  '#E8743B'), ('9–12%', '#C8302C'),
                       ('12–15%','#7A1F1F'), ('>15%',  '#2D0A0A')]]

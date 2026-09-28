@@ -276,7 +276,7 @@ def _verify_one_climb(
         try:
             from map_match import match_coords
             coords = match_coords(coords)
-        except Exception:
+        except Exception:  # noqa: S110 -- optional map-matching service; raw coords by design
             pass  # graceful fallback to raw coords
 
     densified = densify_polyline(coords, stride_m=stride_m)
@@ -293,7 +293,7 @@ def _verify_one_climb(
                     elevs[i] = float(v)
             fallback_used = True
             missing_idx = [i for i, e in enumerate(elevs) if e is None]
-        except Exception:
+        except Exception:  # noqa: S110 -- optional elevation fallback; interpolation by design
             # Fallback unavailable / rate-limited — fall through to interp.
             pass
 
@@ -408,7 +408,7 @@ def _sample_route_dem(
             for i, v in zip(missing_idx, filled):
                 if v is not None:
                     elevs_raw[i] = float(v)
-        except Exception:
+        except Exception:  # noqa: S110 -- optional elevation fallback; interpolation by design
             pass
 
     valid_idx = [i for i, e in enumerate(elevs_raw) if e is not None]
@@ -1241,7 +1241,7 @@ def resolve_coverage_policy(flag: str | None, interactive: bool, has_key: bool) 
 
 def prompt_coverage_gap(missing_tiles: list[str], total_mb: int) -> str:
     """Interactive prompt; returns 'download' / 'api' / 'skip' / 'quit'."""
-    print(f"Route extends outside loaded DEM tiles.")
+    print("Route extends outside loaded DEM tiles.")
     print(f"Missing tiles: {', '.join(missing_tiles[:10])}"
           + (f"... ({len(missing_tiles)} total)" if len(missing_tiles) > 10 else ""))
     print(f"Estimated download size: ~{total_mb} MB")
@@ -1252,8 +1252,12 @@ def prompt_coverage_gap(missing_tiles: list[str], total_mb: int) -> str:
     print("  [q] Quit")
     while True:
         choice = input("Your choice [d]: ").strip().lower() or "d"
-        if choice in ("d", "download"): return "download"
-        if choice in ("a", "api"): return "api"
-        if choice in ("s", "skip"): return "skip"
-        if choice in ("q", "quit"): return "quit"
+        if choice in ("d", "download"):
+            return "download"
+        if choice in ("a", "api"):
+            return "api"
+        if choice in ("s", "skip"):
+            return "skip"
+        if choice in ("q", "quit"):
+            return "quit"
         print("Please answer d / a / s / q.")

@@ -52,9 +52,12 @@ def test_mean_max_grade_picks_steepest_window():
     dists = [float(i) for i in range(1101)]
     elevs = []
     for d in dists:
-        if d < 500: elevs.append(0.0)
-        elif d < 600: elevs.append(0.15 * (d - 500))
-        else: elevs.append(15.0)
+        if d < 500:
+            elevs.append(0.0)
+        elif d < 600:
+            elevs.append(0.15 * (d - 500))
+        else:
+            elevs.append(15.0)
     # peak-25m should hit ~15% (window fits in the wall)
     assert mean_max_grade(elevs, dists, 25.0) > 14.5
     # peak-100m should hit ~15% (window equals wall length)
@@ -68,9 +71,12 @@ def test_detect_walls_finds_segment_above_threshold():
     dists = [float(i) for i in range(451)]
     grades = []
     for d in dists:
-        if d < 200: grades.append(5.0)
-        elif d < 250: grades.append(12.0)
-        else: grades.append(5.0)
+        if d < 200:
+            grades.append(5.0)
+        elif d < 250:
+            grades.append(12.0)
+        else:
+            grades.append(5.0)
     walls = detect_walls(grades, dists, threshold_pct=10.0, min_length_m=30.0,
                          total_length_m=450.0)
     assert len(walls) == 1
@@ -431,7 +437,7 @@ def test_embed_in_prediction_idempotent(tmp_path):
     assert md.read_text().count("<!-- BEGIN FIDELITY -->") == 1
 
 
-from verify_climbs import resolve_coverage_policy
+from verify_climbs import resolve_coverage_policy  # noqa: E402
 
 
 def test_resolve_policy_explicit_flag():
@@ -454,7 +460,7 @@ def test_resolve_policy_default_non_interactive_no_key():
 # stitch_profile: Petrasova-style distance-weighted blend zones
 # -----------------------------------------------------------------
 
-from verify_climbs import stitch_profile
+from verify_climbs import stitch_profile  # noqa: E402
 
 
 def test_stitch_profile_no_climbs_returns_gpx_unchanged():
