@@ -1,4 +1,4 @@
-@CONTRIBUTING.md
+<!-- Coding agents changing this repo: read CONTRIBUTING.md first (process rules, commands, what never to do). It is not imported here, because this file is also the runtime prompt and must stay lean. -->
 
 # Cycling Coach Framework
 
