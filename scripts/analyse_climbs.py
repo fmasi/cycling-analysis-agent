@@ -30,7 +30,6 @@ from pathlib import Path
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -47,6 +46,10 @@ from chart_climb_detail import (  # noqa: F401
     GRADE_COLOURS, grade_colour, climb_stats, resample_segment,
     plot_climb_detail,
 )
+
+# Reference benchmark: a 1.45 km climb at 9% average grade ≈ index 13.05
+# (high Cat 3). Used to give the rider a "% of a known Cat 3" reading.
+REFERENCE_CLIMB_INDEX = 1.45 * 9.0  # 13.05
 
 
 def plot_overview(arrays, climbs, out_path, ride_name=''):
