@@ -1,4 +1,4 @@
-@AGENTS.md
+@CONTRIBUTING.md
 
 # Cycling Coach Framework
 
