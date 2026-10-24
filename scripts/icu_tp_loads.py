@@ -11,7 +11,12 @@ the parallel run), this sets each activity's load to what TP recorded:
 - any other activity (e.g. Wahoo-synced) is matched to a TP file by overlapping
   start time and kind of activity, then gets that card's TSS the same way;
 - a TP card with TSS but no file at all becomes a manual activity
-  (external_id "tp-manual:<workoutId>", upserted, so re-runs don't duplicate).
+  (external_id "tp-manual:<workoutId>", upserted, so re-runs don't duplicate);
+- a TP strength-builder workout (archived under notes/tp-archive/strength/; they
+  never appear as cards) becomes a manual WeightTraining activity
+  ("tp-strength:<id>"), unless intervals.icu already has a strength-type
+  activity overlapping it (e.g. the Watch session arrived via HealthFit), in
+  which case that activity gets the TSS instead.
 
 intervals.icu keeps its own power_load/hr_load alongside the override, for comparison.
 Dry run by default; --apply writes. Then compares intervals.icu's daily load and
@@ -112,6 +117,53 @@ def manual_entries(cards: dict[str, dict], plan_rows: list[dict], since: date, u
     return out
 
 
+def strength_entries(archive: Path, since: date, until: date) -> list[dict]:
+    """Manual WeightTraining activities for TP strength-builder workouts with a completed TSS."""
+    out = []
+    for p in sorted((archive / "strength").glob("*/*.json")):
+        e = json.loads(p.read_text(encoding="utf-8"))
+        d = e.get("detail") or {}
+        lst = e.get("listing") or {}
+        load = d.get("completedTss") or lst.get("completedTss")
+        start = (d.get("startDateTime") or lst.get("startDateTime") or d.get("completedDateTime")
+                 or (lst.get("prescribedDate") or "")[:10] + "T12:00:00")[:19]
+        if not load or not (since.isoformat() <= start[:10] <= until.isoformat()):
+            continue
+        out.append({
+            "external_id": f"tp-strength:{d.get('id') or lst.get('id')}",
+            "start_date_local": start,
+            "type": "WeightTraining",
+            "name": d.get("title") or lst.get("title") or "Strength",
+            "moving_time": int(d.get("executedDurationInSeconds") or 0),
+            "icu_training_load": round(float(load)),
+            "description": f"Imported from TrainingPeaks strength builder; load = TP TSS ({d.get('completedTssSource')}).",
+        })
+    return out
+
+
+def split_strength(entries: list[dict], acts: list[dict]) -> tuple[list[dict], list[tuple[dict, int]]]:
+    """(entries to create, [(existing icu activity, load)]) — an existing WeightTraining activity
+    that overlaps a TP strength session takes its TSS instead of a second, manual copy."""
+    create, assign = [], []
+    for e in entries:
+        s = datetime.fromisoformat(e["start_date_local"])
+        en = s + timedelta(seconds=max(e["moving_time"], 60))
+        hit = None
+        for a in acts:
+            if a.get("type") != "WeightTraining" or (a.get("external_id") or "").startswith("tp-strength:"):
+                continue
+            a_s = datetime.fromisoformat(a["start_date_local"][:19])
+            a_e = a_s + timedelta(seconds=a.get("elapsed_time") or a.get("moving_time") or 60)
+            if overlaps(s, en, a_s, a_e):
+                hit = a
+                break
+        if hit is None:
+            create.append(e)
+        else:
+            assign.append((hit, e["icu_training_load"]))
+    return create, assign
+
+
 def compare_pmc(icu, archive: Path, since: date, until: date) -> None:
     with (archive / "fitness" / "pmc-daily.csv").open(encoding="utf-8") as f:
         tp = {r["date"]: r for r in csv.DictReader(f) if since.isoformat() <= r["date"] <= until.isoformat()}
@@ -153,15 +205,21 @@ def main(argv: list[str] | None = None) -> int:
                                  "icu_training_load,source")
     acts = [a for a in acts if (a.get("start_date_local") or "")[:10] <= args.until.isoformat()]
     targets = target_loads(acts, plan_rows, cards)
+    strength_new, strength_assign = split_strength(strength_entries(archive, args.since, args.until),
+                                                   [a for a in acts if a["id"] not in targets])
+    for a, load in strength_assign:
+        targets[a["id"]] = (load, "strength match")
     changes = [(a, *targets[a["id"]]) for a in acts if a["id"] in targets
                and (a.get("icu_training_load") or 0) != targets[a["id"]][0]]
-    unmatched = [a for a in acts if a["id"] not in targets and not (a.get("external_id") or "").startswith("tp-manual:")]
-    manual = manual_entries(cards, plan_rows, args.since, args.until)
+    unmatched = [a for a in acts if a["id"] not in targets
+                 and not (a.get("external_id") or "").startswith(("tp-manual:", "tp-strength:"))]
+    manual = manual_entries(cards, plan_rows, args.since, args.until) + strength_new
     print(f"{len(acts)} intervals.icu activities in range: {len(changes)} loads to set, "
           f"{len(acts) - len(changes) - len(unmatched)} already right, {len(unmatched)} with no TP match")
     for a in unmatched[:10]:
         print(f"   no TP match: {a.get('start_date_local')} {a.get('type')} {a.get('source')} load {a.get('icu_training_load')}")
-    print(f"{len(manual)} TP cards with TSS and no file -> manual activities")
+    print(f"{len(manual) - len(strength_new)} TP cards with TSS and no file, {len(strength_new)} strength-builder "
+          f"workouts -> manual activities; {len(strength_assign)} strength sessions matched to existing activities")
     if args.apply:
         for a, load, _ in changes:
             icu.update_activity(a["id"], {"icu_training_load": load})
