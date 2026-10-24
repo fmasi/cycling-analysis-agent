@@ -6,8 +6,11 @@ Usage:
     python scripts/training_load.py --ctl 42 --atl 43 --plan 60,60,20,150,0 --labels Wed,Thu,Fri,Sat,Sun
 
 Conventions (matches TrainingPeaks display):
-    - CTL = 42-day EMA of daily TSS (exponential form, 1 - exp(-1/42))
-    - ATL = 7-day EMA  (1 - exp(-1/7))
+    - CTL = 42-day EMA of daily TSS, TrainingPeaks' simple form: CTL += (TSS - CTL) / 42
+    - ATL = 7-day EMA, same form: ATL += (TSS - ATL) / 7
+      (Not 1 - exp(-1/42): TP's own daily series reproduces exactly, to 1e-14, with 1/42
+      and 1/7, and drifts by up to ~5.6 ATL with the exponential alpha. Verified against
+      the full 2015-2026 TP export on 2026-10-24.)
     - TSB shown on day N = CTL(end of day N-1) - ATL(end of day N-1)
       i.e. the "form" you carry INTO day N's training, before day N's TSS is
       applied. This matches what TP displays (tooltip: "yesterday's fitness
@@ -19,14 +22,13 @@ Conventions (matches TrainingPeaks display):
 """
 
 import argparse
-import math
 
 
 CTL_DECAY_DAYS = 42
 ATL_DECAY_DAYS = 7
 
-CTL_K = 1 - math.exp(-1 / CTL_DECAY_DAYS)  # ≈ 0.023528
-ATL_K = 1 - math.exp(-1 / ATL_DECAY_DAYS)  # ≈ 0.133122
+CTL_K = 1 / CTL_DECAY_DAYS  # ≈ 0.023810, TrainingPeaks' convention
+ATL_K = 1 / ATL_DECAY_DAYS  # ≈ 0.142857
 
 
 def project(ctl_start, atl_start, daily_tss):

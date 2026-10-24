@@ -213,8 +213,9 @@ Per-climb detail charts are generated for **Cat 3 and harder**; an overview char
 ## Training load definitions
 
 - **TSS** (Training Stress Score) — relative workload of a session, normalised against FTP. Use timer time, never elapsed.
-- **CTL** (Chronic Training Load) — 42-day EMA of daily TSS (`α = 1 − exp(−1/42)`). Proxy for fitness.
-- **ATL** (Acute Training Load) — 7-day EMA of daily TSS (`α = 1 − exp(−1/7)`). Proxy for fatigue.
+- **CTL** (Chronic Training Load) — 42-day EMA of daily TSS, TrainingPeaks' form: `CTL += (TSS − CTL) / 42` (α = 1/42). Proxy for fitness.
+- **ATL** (Acute Training Load) — 7-day EMA of daily TSS, same form: `ATL += (TSS − ATL) / 7` (α = 1/7). Proxy for fatigue.
+  - Why 1/42 and not `1 − exp(−1/42)`: TP's own daily series (2015–2026 export) reproduces exactly with 1/42 and 1/7 and drifts by up to ~5.6 ATL with the exponential α. Matching TP keeps the coach's numbers identical to what the rider sees. Rider decision, 2026-10-24: keep TP's model until there's a reason to change.
 - **TSB** (Training Stress Balance) — **yesterday's CTL − yesterday's ATL** (TP convention, lag-1).
   - This is the form you carry *into* today's training, before today's TSS is applied.
   - Matches what TrainingPeaks displays (tooltip: "yesterday's fitness minus yesterday's fatigue").

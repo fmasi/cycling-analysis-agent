@@ -5,14 +5,15 @@ values below are literals worked out by hand from the conventions in CLAUDE.md
 ("Training load definitions") and the training_load.py docstring, not recomputed
 with the module's own code:
 
-- CTL: 42-day EMA of daily TSS, alpha = 1 - exp(-1/42) = 0.0235283133...
-- ATL:  7-day EMA of daily TSS, alpha = 1 - exp(-1/7)  = 0.1331221002...
+- CTL: 42-day EMA of daily TSS, TrainingPeaks' form: CTL += (TSS - CTL) / 42
+- ATL:  7-day EMA of daily TSS, same form:        ATL += (TSS - ATL) / 7
 - TSB: lag-1 (TrainingPeaks): the form carried INTO day N is end-of-day N-1
   CTL minus end-of-day N-1 ATL. Never same-day CTL - ATL.
 
-With the exponential alpha, N days of constant TSS T from zero give
-CTL = T * (1 - exp(-N/42)) exactly, so 42 days of 100 TSS land on
-100 * (1 - 1/e) = 63.2120558829. That closed form anchors several cases.
+With this alpha, N days of constant TSS T from zero give
+CTL = T * (1 - (41/42)^N) exactly, and N rest days scale CTL by (41/42)^N
+(ATL by (6/7)^N). Those closed forms anchor several cases; the literals were
+evaluated with exact fractions.
 
 All inputs are synthetic.
 """
@@ -31,12 +32,12 @@ def test_decay_windows_are_42_and_7_days():
     assert tl.ATL_DECAY_DAYS == 7
 
 
-def test_alphas_use_the_exponential_form():
-    # 1 - exp(-1/42) and 1 - exp(-1/7), not the simple 1/42 and 1/7.
-    assert tl.CTL_K == pytest.approx(0.0235283133477567, abs=1e-15)
-    assert tl.ATL_K == pytest.approx(0.1331221002498184, abs=1e-15)
-    assert tl.CTL_K != pytest.approx(1 / 42, abs=1e-6)
-    assert tl.ATL_K != pytest.approx(1 / 7, abs=1e-6)
+def test_alphas_use_the_trainingpeaks_form():
+    # TP's simple 1/42 and 1/7, not 1 - exp(-1/42) (0.0235283) / 1 - exp(-1/7) (0.1331221).
+    assert tl.CTL_K == pytest.approx(0.0238095238095238, abs=1e-15)
+    assert tl.ATL_K == pytest.approx(0.1428571428571429, abs=1e-15)
+    assert tl.CTL_K != pytest.approx(0.0235283133477567, abs=1e-6)
+    assert tl.ATL_K != pytest.approx(0.1331221002498184, abs=1e-6)
 
 
 # --- project(): shape --------------------------------------------------------
@@ -59,39 +60,39 @@ def test_worked_two_day_example():
     (_, _, ctl0, atl0, tsb0), (_, _, ctl1, atl1, tsb1) = tl.project(50.0, 60.0, [100.0, 0.0])
 
     assert tsb0 == pytest.approx(-10.0, abs=TOL)               # 50 - 60
-    assert ctl0 == pytest.approx(51.1764156674, abs=TOL)       # 50 + 50 * 0.0235283
-    assert atl0 == pytest.approx(65.3248840100, abs=TOL)       # 60 + 40 * 0.1331221
+    assert ctl0 == pytest.approx(51.1904761905, abs=TOL)       # 50 + 50 / 42
+    assert atl0 == pytest.approx(65.7142857143, abs=TOL)       # 60 + 40 / 7
 
-    assert tsb1 == pytest.approx(-14.1484683426, abs=TOL)      # ctl0 - atl0
-    assert ctl1 == pytest.approx(49.9723209236, abs=TOL)       # ctl0 * exp(-1/42)
-    assert atl1 == pytest.approx(56.6286982520, abs=TOL)       # atl0 * exp(-1/7)
+    assert tsb1 == pytest.approx(-14.5238095238, abs=TOL)      # ctl0 - atl0
+    assert ctl1 == pytest.approx(49.9716553288, abs=TOL)       # ctl0 * 41/42
+    assert atl1 == pytest.approx(56.3265306122, abs=TOL)       # atl0 * 6/7
 
 
 def test_single_session_from_zero():
     (_, _, ctl0, atl0, tsb0), (_, _, _, _, tsb1) = tl.project(0.0, 0.0, [100.0, 0.0])
-    assert ctl0 == pytest.approx(2.3528313348, abs=TOL)
-    assert atl0 == pytest.approx(13.3122100250, abs=TOL)
+    assert ctl0 == pytest.approx(2.3809523810, abs=TOL)        # 100 / 42
+    assert atl0 == pytest.approx(14.2857142857, abs=TOL)       # 100 / 7
     assert tsb0 == pytest.approx(0.0, abs=TOL)                 # nothing carried in yet
-    assert tsb1 == pytest.approx(-10.9593786902, abs=TOL)      # the session shows up next day
+    assert tsb1 == pytest.approx(-11.9047619048, abs=TOL)      # the session shows up next day
 
 
 def test_42_days_of_constant_load_from_zero():
     rows = tl.project(0.0, 0.0, [100.0] * 42)
     _, _, ctl, atl, _ = rows[-1]
-    assert ctl == pytest.approx(63.2120558829, abs=TOL)        # 100 * (1 - e^-1)
-    assert atl == pytest.approx(99.7521247823, abs=TOL)        # 100 * (1 - e^-6)
+    assert ctl == pytest.approx(63.6544047828, abs=TOL)        # 100 * (1 - (41/42)^42)
+    assert atl == pytest.approx(99.8457465680, abs=TOL)        # 100 * (1 - (6/7)^42)
 
 
 def test_7_days_of_constant_load_from_zero():
     _, _, _, atl, _ = tl.project(0.0, 0.0, [100.0] * 7)[-1]
-    assert atl == pytest.approx(63.2120558829, abs=TOL)        # 100 * (1 - e^-1)
+    assert atl == pytest.approx(66.0083322911, abs=TOL)        # 100 * (1 - (6/7)^7)
 
 
-def test_rest_decays_by_one_over_e_per_window():
+def test_rest_decays_geometrically():
     _, _, ctl, _, _ = tl.project(100.0, 100.0, [0.0] * 42)[-1]
-    assert ctl == pytest.approx(36.7879441171, abs=TOL)        # 100 / e
+    assert ctl == pytest.approx(36.3455952172, abs=TOL)        # 100 * (41/42)^42
     _, _, _, atl, _ = tl.project(100.0, 100.0, [0.0] * 7)[-1]
-    assert atl == pytest.approx(36.7879441171, abs=TOL)        # 100 / e
+    assert atl == pytest.approx(33.9916677089, abs=TOL)        # 100 * (6/7)^7
 
 
 def test_steady_state_holds():
@@ -155,8 +156,8 @@ def test_cli_prints_the_worked_example(monkeypatch, capsys):
     assert "CTL 50.0, ATL 60.0, TSB -10.0" in out
     mon = next(line for line in out.splitlines() if line.startswith("Mon"))
     tue = next(line for line in out.splitlines() if line.startswith("Tue"))
-    assert mon.split()[1:5] == ["100", "51.2", "65.3", "-10.0"]
-    assert tue.split()[1:5] == ["0", "50.0", "56.6", "-14.1"]
+    assert mon.split()[1:5] == ["100", "51.2", "65.7", "-10.0"]
+    assert tue.split()[1:5] == ["0", "50.0", "56.3", "-14.5"]
     assert "Total TSS: 100" in out
     assert "<200 TSS in a week" in out
 

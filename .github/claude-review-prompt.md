@@ -18,7 +18,7 @@ never enter it.
 
 The spec is CLAUDE.md ("Training load definitions", "Power zone formulas", "HR zone formula",
 "Physics model", "Things to never do"). Among others:
-- CTL / ATL: EMAs with `alpha = 1 - exp(-1/42)` and `1 - exp(-1/7)`;
+- CTL / ATL: EMAs with TrainingPeaks' `alpha = 1/42` and `1/7` (not `1 - exp(-1/42)`);
 - TSB: lag-1 (yesterday's CTL − yesterday's ATL), never same-day except in clearly labelled
   end-of-day forecasts;
 - TSS from timer time, never elapsed; the stored TSS is read before recomputing;
