@@ -14,16 +14,21 @@ Writes, relative to --out-root (default: the repo root):
     notes/tp-archive/workouts/<year>.json           workout cards, incl. comments and structure
     notes/tp-archive/details/<year>/<workoutId>.json  file infos, mean-max curves, time in zones
     rides/fit/tp-export/<year>/<day>_<workoutId>_<fileId>_<name>  original device files
-    rides/fit/tp-export/manifest.csv                workout_id, file_id, sha256, bytes, path
+    notes/tp-archive/attachments/<year>/...         files attached to workouts (photos, PDFs)
+    rides/fit/tp-export/manifest.csv                kind, workout_id, file_id, sha256, bytes, path
     notes/tp-archive/extras/*.json                  settings, equipment, libraries, events, ATP, notes
 
-Resumable: details and files already on disk are skipped, so a re-run fetches
-only what is new or failed. Exits non-zero if any request failed.
+A narrower --since/--until run MERGES into the existing archives (by date or
+id; the newer copy wins), so a final top-up never truncates the history.
+Resumable: details and files already on disk are skipped, except details of
+workouts in the last --refresh-days, which are re-fetched to catch late uploads.
+Writes are atomic. Stops on the first auth failure; exits non-zero if any
+request failed.
 
 Usage:
     python scripts/tp_export.py                               # everything since --since
-    python scripts/tp_export.py --since 2026-09-01 --limit 5  # quick test
-    python scripts/tp_export.py --phases fitness,metrics
+    python scripts/tp_export.py --since 2026-10-20            # top-up, merged into the archive
+    python scripts/tp_export.py --since 2026-09-01 --limit 5 --out-root /tmp/tp-test  # quick test
 """
 from __future__ import annotations
 
@@ -32,19 +37,28 @@ import asyncio
 import csv
 import gzip
 import hashlib
+import io
 import json
+import os
 import re
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PHASES = ("fitness", "metrics", "workouts", "files", "extras")
 DEFAULT_SINCE = date(2015, 1, 1)
 MAX_WINDOW_DAYS = 365          # the workouts list accepts a 12-month window
 RETRY_CODES = {"RATE_LIMITED", "API_ERROR", "NETWORK_ERROR"}
-MANIFEST_FIELDS = ["workout_id", "file_id", "workout_day", "sha256", "bytes", "path"]
+AUTH_CODES = {"AUTH_EXPIRED", "AUTH_INVALID"}
+MANIFEST_FIELDS = ["kind", "workout_id", "file_id", "workout_day", "sha256", "bytes", "path"]
+SESSION_FIELDS = ("totalTime", "distance", "tssActual", "startTime", "heartRateAverage", "powerAverage")
+DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+class AuthAbort(Exception):
+    """The TP session died mid-run: stop instead of hammering the token endpoint."""
 
 
 # ---------------------------------------------------------------- pure helpers
@@ -64,38 +78,47 @@ def date_windows(since: date, until: date, max_days: int = MAX_WINDOW_DAYS) -> l
 
 def flatten_pmc(rows: list[dict]) -> list[dict]:
     """TP performancedata rows -> date, tss, ctl, atl, tsb. TP's `tsb` is already lag-1."""
-    out = []
-    for r in rows:
-        out.append({
-            "date": (r.get("workoutDay") or "")[:10],
-            "tss_actual": r.get("tssActual") or 0.0,
-            "tss_planned": r.get("tssPlanned") or 0.0,
-            "ctl": r.get("ctl"),
-            "atl": r.get("atl"),
-            "tsb": r.get("tsb"),
-        })
-    return out
+    return [{
+        "date": (r.get("workoutDay") or "")[:10],
+        "tss_actual": r.get("tssActual") or 0.0,
+        "tss_planned": r.get("tssPlanned") or 0.0,
+        "ctl": r.get("ctl"),
+        "atl": r.get("atl"),
+        "tsb": r.get("tsb"),
+    } for r in rows]
 
 
 def flatten_metrics(entries: list[dict]) -> list[dict]:
     """consolidatedtimedmetrics -> one row per logged value."""
-    out = []
-    for e in entries:
-        for d in e.get("details") or []:
-            out.append({
-                "date": (e.get("timeStamp") or "")[:10],
-                "time": d.get("time"),
-                "type": d.get("type"),
-                "label": d.get("label"),
-                "value": d.get("value"),
-                "source": d.get("uploadClient"),
-            })
-    return out
+    return [{
+        "date": (e.get("timeStamp") or "")[:10],
+        "time": d.get("time"),
+        "type": d.get("type"),
+        "label": d.get("label"),
+        "value": d.get("value"),
+        "source": d.get("uploadClient"),
+    } for e in entries for d in e.get("details") or []]
 
 
-def is_completed(card: dict) -> bool:
-    """A card with a recorded session (and so possibly a device file)."""
-    return bool(card.get("completed")) or (card.get("totalTime") or 0) > 0
+def merge_by_key(old: list, new: list, key: Callable[[Any], Any]) -> list:
+    """Union of old and new keyed by key(item); the new copy wins; order follows the key."""
+    merged = {key(x): x for x in old}
+    merged.update({key(x): x for x in new})
+    return [merged[k] for k in sorted(merged, key=str)]
+
+
+def item_key(x: Any) -> str:
+    """Stable identity for extras rows: their id when they have one, else the whole row."""
+    if isinstance(x, dict):
+        for k in ("id", "eventId", "calendarNoteId", "availabilityId"):
+            if x.get(k) is not None:
+                return f"{k}:{x[k]}"
+    return json.dumps(x, sort_keys=True)
+
+
+def has_session(card: dict) -> bool:
+    """A card with a recorded session, so possibly device files. Planned-only cards have none of these."""
+    return bool(card.get("completed")) or any(card.get(k) not in (None, 0, "") for k in SESSION_FIELDS)
 
 
 def safe_name(name: str) -> str:
@@ -105,10 +128,20 @@ def safe_name(name: str) -> str:
     return base or "file"
 
 
+def card_day(card: dict) -> str:
+    day = (card.get("workoutDay") or "")[:10]
+    return day if DAY_RE.fullmatch(day) else "0000-00-00"
+
+
 def file_target(root: Path, card: dict, finfo: dict) -> Path:
-    day = (card.get("workoutDay") or "0000-00-00")[:10]
-    name = safe_name(finfo.get("fileName") or f"{finfo.get('fileId')}.fit.gz")
-    return root / day[:4] / f"{day}_{card['workoutId']}_{finfo['fileId']}_{name}"
+    """<root>/<year>/<day>_<workoutId>_<fileId>_<name>, guaranteed to stay under root."""
+    day = card_day(card)
+    wid, fid = int(card["workoutId"]), int(finfo["fileId"])
+    name = safe_name(finfo.get("fileName") or f"{fid}.fit.gz")
+    target = root / day[:4] / f"{day}_{wid}_{fid}_{name}"
+    if not target.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"refusing to write outside {root}: {target}")
+    return target
 
 
 def payload_sha256(data: bytes) -> str:
@@ -121,35 +154,61 @@ def payload_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def load_manifest(path: Path) -> dict[tuple[str, str], dict]:
-    if not path.exists():
-        return {}
-    with path.open(newline="") as f:
-        return {(r["workout_id"], r["file_id"]): r for r in csv.DictReader(f)}
-
-
-def write_csv(path: Path, rows: list[dict], fields: list[str]) -> None:
+def write_atomic(path: Path, data: bytes) -> None:
+    """Write via a temp file and rename, so an interrupted run never leaves a truncated file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        w.writerows(rows)
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
 
 
 def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=1, ensure_ascii=False))
+    write_atomic(path, json.dumps(data, indent=1, ensure_ascii=False).encode("utf-8"))
+
+
+def write_csv(path: Path, rows: list[dict], fields: list[str]) -> None:
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=fields)
+    w.writeheader()
+    w.writerows(rows)
+    write_atomic(path, buf.getvalue().encode("utf-8"))
+
+
+def read_json(path: Path, default: Any) -> Any:
+    """Parsed JSON, or default when the file is missing or unreadable (e.g. a pre-atomic truncation)."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def read_list(path: Path) -> list:
+    """An archive file expected to hold a JSON list; anything else (missing, truncated,
+    or an older single-object format) counts as empty so a merge can't misread it."""
+    data = read_json(path, [])
+    return data if isinstance(data, list) else []
+
+
+def load_manifest(path: Path) -> dict[tuple[str, str, str], dict]:
+    if not path.exists():
+        return {}
+    with path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    for r in rows:
+        r["kind"] = r.get("kind") or "device"
+    return {(r["kind"], r["workout_id"], r["file_id"]): r for r in rows}
 
 
 # ---------------------------------------------------------------- exporter
 
 class Exporter:
     def __init__(self, client: Any, out_root: Path, since: date, until: date,
-                 limit: int | None = None, retry_delay: float = 5.0):
+                 limit: int | None = None, refresh_days: int = 14, retry_delay: float = 5.0):
         self.c = client
         self.root = out_root
         self.since, self.until = since, until
         self.limit = limit
+        self.refresh_from = (until - timedelta(days=refresh_days)).isoformat()
         self.retry_delay = retry_delay
         self.archive = out_root / "notes" / "tp-archive"
         self.files_root = out_root / "rides" / "fit" / "tp-export"
@@ -160,6 +219,9 @@ class Exporter:
     def _count(self, key: str, n: int = 1) -> None:
         self.stats[key] = self.stats.get(key, 0) + n
 
+    def _fail(self, msg: str) -> None:
+        self.failures.append(msg)
+
     async def _call(self, method: str, endpoint: str, **kw: Any) -> Any:
         """One request with up to 3 retries on rate-limit/transient errors. None on failure."""
         for attempt in range(4):
@@ -167,8 +229,10 @@ class Exporter:
             if resp.success:
                 return resp
             code = resp.error_code.value if resp.error_code else "API_ERROR"
+            if code in AUTH_CODES:
+                raise AuthAbort(f"{method.upper()} {endpoint}: {code} {resp.message}")
             if code not in RETRY_CODES or attempt == 3:
-                self.failures.append(f"{method.upper()} {endpoint}: {code} {resp.message}")
+                self._fail(f"{method.upper()} {endpoint}: {code} {resp.message}")
                 return None
             await asyncio.sleep(self.retry_delay * (attempt + 1))
         return None
@@ -182,8 +246,10 @@ class Exporter:
                                    "ctlStart": 0, "workoutTypes": []})
         if r is None:
             return
-        rows = r.data if isinstance(r.data, list) else []
-        write_json(self.archive / "fitness" / "performancedata.json", rows)
+        path = self.archive / "fitness" / "performancedata.json"
+        rows = merge_by_key(read_list(path), r.data if isinstance(r.data, list) else [],
+                            lambda x: (x.get("workoutDay") or "")[:10])
+        write_json(path, rows)
         write_csv(self.archive / "fitness" / "pmc-daily.csv", flatten_pmc(rows),
                   ["date", "tss_actual", "tss_planned", "ctl", "atl", "tsb"])
         self._count("pmc_days", len(rows))
@@ -193,79 +259,97 @@ class Exporter:
                              f"{self.since}/{self.until}")
         if r is None:
             return
-        entries = r.data if isinstance(r.data, list) else []
-        write_json(self.archive / "metrics" / "consolidatedtimedmetrics.json", entries)
+        path = self.archive / "metrics" / "consolidatedtimedmetrics.json"
+        entries = merge_by_key(read_list(path), r.data if isinstance(r.data, list) else [],
+                               lambda x: (x.get("timeStamp") or "")[:10] + f"#{x.get('id')}")
+        write_json(path, entries)
         rows = flatten_metrics(entries)
         write_csv(self.root / "body-comp" / "tp-metrics-history.csv", rows,
                   ["date", "time", "type", "label", "value", "source"])
         self._count("metric_values", len(rows))
 
     async def workouts(self) -> list[dict]:
-        """Workout cards per window, merged into one JSON file per year."""
+        """Workout cards per window, merged by workoutId into one JSON file per year."""
         by_year: dict[str, list[dict]] = {}
         for start, end in date_windows(self.since, self.until):
             r = await self._call("get", f"/fitness/v6/athletes/{self.aid}/workouts/{start}/{end}")
             for card in (r.data if r is not None and isinstance(r.data, list) else []):
-                by_year.setdefault((card.get("workoutDay") or "0000")[:4], []).append(card)
-        cards = []
+                by_year.setdefault(card_day(card)[:4], []).append(card)
         for year, items in sorted(by_year.items()):
-            items.sort(key=lambda c: (c.get("workoutDay") or "", c.get("orderOnDay") or 0))
-            write_json(self.archive / "workouts" / f"{year}.json", items)
-            cards.extend(items)
+            path = self.archive / "workouts" / f"{year}.json"
+            merged = merge_by_key(read_list(path), items, lambda c: c["workoutId"])
+            merged.sort(key=lambda c: (card_day(c), c.get("orderOnDay") or 0))
+            write_json(path, merged)
+        cards = self._cached_cards()
         self._count("cards", len(cards))
-        self._count("cards_completed", sum(is_completed(c) for c in cards))
+        self._count("cards_with_session", sum(has_session(c) for c in cards))
         return cards
 
     def _cached_cards(self) -> list[dict]:
         cards = []
         for p in sorted((self.archive / "workouts").glob("*.json")):
-            cards.extend(json.loads(p.read_text()))
-        return [c for c in cards if self.since.isoformat() <= (c.get("workoutDay") or "")[:10]
-                <= self.until.isoformat()]
+            cards.extend(read_list(p))
+        lo, hi = self.since.isoformat(), self.until.isoformat()
+        return [c for c in cards if lo <= card_day(c) <= hi]
 
     async def details(self, card: dict) -> dict | None:
-        day = (card.get("workoutDay") or "0000")[:10]
-        path = self.archive / "details" / day[:4] / f"{card['workoutId']}.json"
-        if path.exists():
+        day = card_day(card)
+        path = self.archive / "details" / day[:4] / f"{int(card['workoutId'])}.json"
+        cached = read_json(path, None) if day < self.refresh_from else None
+        if isinstance(cached, dict):
             self._count("details_cached")
-            return json.loads(path.read_text())
+            return cached
         r = await self._call("get", f"/fitness/v6/athletes/{self.aid}/workouts/{card['workoutId']}/details")
-        if r is None or not isinstance(r.data, dict):
+        if r is None:
+            return None
+        if not isinstance(r.data, dict):
+            self._fail(f"details {card['workoutId']}: unexpected payload {type(r.data).__name__}")
             return None
         write_json(path, r.data)
         self._count("details_fetched")
         return r.data
 
     async def files(self, cards: list[dict]) -> None:
+        if not cards:
+            self._fail("files: no workout cards in range; run the workouts phase first")
+            return
         manifest_path = self.files_root / "manifest.csv"
         manifest = load_manifest(manifest_path)
         seen_hashes = {row["sha256"] for row in manifest.values()}
-        done = [c for c in cards if is_completed(c)]
-        if self.limit is not None:
-            done = done[-self.limit:]
-        for card in done:
-            det = await self.details(card)
-            for finfo in (det or {}).get("workoutDeviceFileInfos") or []:
-                key = (str(card["workoutId"]), str(finfo["fileId"]))
-                target = file_target(self.files_root, card, finfo)
-                if key in manifest and target.exists():
-                    self._count("files_cached")
-                    continue
-                raw = await self._call("get_raw", f"/fitness/v6/athletes/{self.aid}/workouts/"
-                                       f"{card['workoutId']}/rawfiledata/{finfo['fileId']}")
-                if raw is None or not raw.content:
-                    continue
-                digest = payload_sha256(raw.content)
-                if digest in seen_hashes:
-                    self._count("files_duplicate")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(raw.content)
-                seen_hashes.add(digest)
-                manifest[key] = {"workout_id": key[0], "file_id": key[1],
-                                 "workout_day": (card.get("workoutDay") or "")[:10],
-                                 "sha256": digest, "bytes": len(raw.content),
-                                 "path": str(target.relative_to(self.root))}
-                self._count("files_downloaded")
+        sessions = [c for c in cards if has_session(c)]
+        self._count("cards_planned_only", len(cards) - len(sessions))
+        if self.limit:
+            sessions = sessions[-self.limit:]
+        kinds = (("device", "workoutDeviceFileInfos", self.files_root),
+                 ("attachment", "attachmentFileInfos", self.archive / "attachments"))
+        for card in sessions:
+            det = await self.details(card) or {}
+            for kind, field, root in kinds:
+                for finfo in det.get(field) or []:
+                    if finfo.get("fileId") is None:
+                        self._fail(f"{kind} file without fileId on workout {card['workoutId']}")
+                        continue
+                    key = (kind, str(card["workoutId"]), str(finfo["fileId"]))
+                    target = file_target(root, card, finfo)
+                    if key in manifest and target.exists():
+                        self._count(f"{kind}_cached")
+                        continue
+                    raw = await self._call("get_raw", f"/fitness/v6/athletes/{self.aid}/workouts/"
+                                           f"{card['workoutId']}/rawfiledata/{finfo['fileId']}")
+                    if raw is None:
+                        continue
+                    if not raw.content:
+                        self._fail(f"{kind} {key[1]}/{key[2]}: empty file body")
+                        continue
+                    digest = payload_sha256(raw.content)
+                    if digest in seen_hashes:
+                        self._count(f"{kind}_duplicate_payload")
+                    write_atomic(target, raw.content)
+                    seen_hashes.add(digest)
+                    manifest[key] = {"kind": kind, "workout_id": key[1], "file_id": key[2],
+                                     "workout_day": card_day(card), "sha256": digest,
+                                     "bytes": len(raw.content), "path": str(target.relative_to(self.root))}
+                    self._count(f"{kind}_downloaded")
             # Persist after every workout so an interrupted run resumes cleanly.
             write_csv(manifest_path, sorted(manifest.values(), key=lambda r: (r["workout_day"], r["path"])),
                       MANIFEST_FIELDS)
@@ -276,7 +360,6 @@ class Exporter:
             "settings": f"/fitness/v1/athletes/{a}/settings",
             "poollengthsettings": f"/fitness/v1/athletes/{a}/poollengthsettings",
             "equipment": f"/fitness/v1/athletes/{a}/equipment",
-            "atp": f"/fitness/v1/athletes/{a}/atp/{s}/{u}",
         }
         for name, ep in single.items():
             r = await self._call("get", ep)
@@ -284,17 +367,19 @@ class Exporter:
                 write_json(self.archive / "extras" / f"{name}.json", r.data)
                 self._count("extras")
         ranged = {
+            "atp": f"/fitness/v1/athletes/{a}/atp/{{start}}/{{end}}",
             "events": f"/fitness/v6/athletes/{a}/events/{{start}}/{{end}}",
             "calendar-notes": f"/fitness/v2/athletes/{a}/calendarNote/{{start}}/{{end}}",
             "availability": f"/fitness/v1/athletes/{a}/availability/{{start}}/{{end}}",
         }
         for name, tmpl in ranged.items():
-            items: list[Any] = []
+            new: list[Any] = []
             for start, end in date_windows(s, u):
                 r = await self._call("get", tmpl.format(start=start, end=end))
-                if r is not None and isinstance(r.data, list):
-                    items.extend(r.data)
-            write_json(self.archive / "extras" / f"{name}.json", items)
+                if r is not None:
+                    new.extend(r.data if isinstance(r.data, list) else [r.data] if r.data else [])
+            path = self.archive / "extras" / f"{name}.json"
+            write_json(path, merge_by_key(read_list(path), new, item_key))
             self._count("extras")
         r = await self._call("get", "/exerciselibrary/v2/libraries")
         libraries = r.data if r is not None and isinstance(r.data, list) else []
@@ -313,20 +398,32 @@ class Exporter:
         if not self.aid:
             print("Could not resolve the athlete ID: re-authenticate with `tp-mcp auth`.", file=sys.stderr)
             return 2
-        if "fitness" in phases:
-            await self.fitness()
-        if "metrics" in phases:
-            await self.metrics()
-        cards = await self.workouts() if "workouts" in phases else self._cached_cards()
-        if "files" in phases:
-            await self.files(cards)
-        if "extras" in phases:
-            await self.extras()
-        for k, v in sorted(self.stats.items()):
-            print(f"  {k}: {v}")
-        for f in self.failures:
-            print(f"  FAILED {f}", file=sys.stderr)
+        try:
+            if "fitness" in phases:
+                await self.fitness()
+            if "metrics" in phases:
+                await self.metrics()
+            cards = await self.workouts() if "workouts" in phases else self._cached_cards()
+            if "files" in phases:
+                await self.files(cards)
+            if "extras" in phases:
+                await self.extras()
+        except AuthAbort as e:
+            print(f"Auth failed, stopping (re-run after `tp-mcp auth` to resume): {e}", file=sys.stderr)
+            return 2
+        finally:
+            for k, v in sorted(self.stats.items()):
+                print(f"  {k}: {v}")
+            for f in self.failures:
+                print(f"  FAILED {f}", file=sys.stderr)
         return 1 if self.failures else 0
+
+
+def positive_int(text: str) -> int:
+    n = int(text)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be ≥ 1")
+    return n
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -336,8 +433,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--until", type=date.fromisoformat, default=date.today())
     p.add_argument("--phases", default=",".join(PHASES),
                    help=f"comma-separated subset of {','.join(PHASES)}")
-    p.add_argument("--limit", type=int, default=None,
-                   help="files phase: only the N most recent completed workouts (for testing)")
+    p.add_argument("--limit", type=positive_int, default=None,
+                   help="files phase: only the N most recent workouts with a session (for testing)")
+    p.add_argument("--refresh-days", type=int, default=14,
+                   help="re-fetch details of workouts in the last N days to catch late uploads (default 14)")
     p.add_argument("--out-root", type=Path, default=REPO_ROOT)
     args = p.parse_args(argv)
     args.phases = [x.strip() for x in args.phases.split(",") if x.strip()]
@@ -351,7 +450,8 @@ async def _main(args: argparse.Namespace) -> int:
     from tp_mcp.client.http import TPClient  # deferred: tests run without tp-mcp
 
     async with TPClient() as client:
-        exporter = Exporter(client, args.out_root, args.since, args.until, limit=args.limit)
+        exporter = Exporter(client, args.out_root, args.since, args.until,
+                            limit=args.limit, refresh_days=args.refresh_days)
         return await exporter.run(args.phases)
 
 

@@ -104,10 +104,11 @@ def test_payload_sha256_sees_through_gzip():
     assert tx.payload_sha256(gzip.compress(raw)) == tx.payload_sha256(raw)
 
 
-def test_is_completed():
-    assert tx.is_completed({"completed": True})
-    assert tx.is_completed({"totalTime": 1.5})
-    assert not tx.is_completed({"completed": False, "totalTime": None})
+def test_has_session():
+    assert tx.has_session({"completed": True})
+    assert tx.has_session({"totalTime": 1.5})
+    assert tx.has_session({"totalTime": None, "distance": 12000.0})   # distance-only upload
+    assert not tx.has_session({"completed": False, "totalTime": None, "tssPlanned": 60})
 
 
 def _routes(raw_calls):
@@ -131,23 +132,23 @@ def _routes(raw_calls):
 def test_files_phase_downloads_once_and_resumes(tmp_path):
     raw_calls = []
     client = FakeClient(_routes(raw_calls))
-    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), refresh_days=0, retry_delay=0)
     assert run(ex, ["workouts", "files"]) == 0
     target = tmp_path / "rides/fit/tp-export/2026/2026-10-20_1_11_ride.fit.gz"
     assert gzip.decompress(target.read_bytes()) == b"fit-1"
     with (tmp_path / "rides/fit/tp-export/manifest.csv").open() as f:
         rows = list(csv.DictReader(f))
-    assert [(r["workout_id"], r["file_id"]) for r in rows] == [("1", "11")]
+    assert [(r["kind"], r["workout_id"], r["file_id"]) for r in rows] == [("device", "1", "11")]
     assert rows[0]["sha256"] == tx.payload_sha256(b"fit-1")
     # the planned-only card never triggers a details call
     assert not any(e.endswith("/workouts/2/details") for _, e in client.calls)
 
     # Second run reuses the cached cards, details and file: no new downloads.
     client2 = FakeClient(_routes(raw_calls))
-    ex2 = tx.Exporter(client2, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    ex2 = tx.Exporter(client2, tmp_path, date(2026, 10, 1), date(2026, 10, 24), refresh_days=0, retry_delay=0)
     assert run(ex2, ["files"]) == 0
     assert len(raw_calls) == 1
-    assert ex2.stats["files_cached"] == 1 and ex2.stats["details_cached"] == 1
+    assert ex2.stats["device_cached"] == 1 and ex2.stats["details_cached"] == 1
 
 
 def test_fitness_is_one_call_over_the_whole_range(tmp_path):
@@ -195,3 +196,142 @@ def test_parse_args_rejects_unknown_phase(capsys):
     with pytest.raises(SystemExit):
         tx.parse_args(["--phases", "fitness,bogus"])
     assert "bogus" in capsys.readouterr().err
+
+
+def test_file_target_rejects_non_numeric_ids(tmp_path):
+    import pytest
+    with pytest.raises(ValueError):
+        tx.file_target(tmp_path, {"workoutId": "../../x", "workoutDay": "2026-10-23"}, {"fileId": 1})
+    # a malformed day falls back to a placeholder instead of becoming a path component
+    t = tx.file_target(tmp_path, {"workoutId": 3, "workoutDay": "../z"}, {"fileId": -5, "fileName": "a.fit"})
+    assert t == tmp_path / "0000" / "0000-00-00_3_-5_a.fit"
+
+
+def test_narrow_run_merges_instead_of_truncating(tmp_path):
+    def pmc(days):
+        return Resp(data=[{"workoutDay": f"{d}T00:00:00", "tssActual": 1.0, "ctl": 1.0, "atl": 1.0, "tsb": 0.0}
+                          for d in days])
+    full = FakeClient({"/performancedata/2026-01-01/2026-10-24": pmc(["2026-01-01", "2026-10-23"]),
+                       "/workouts/2026-01-01/2026-10-24": Resp(data=[
+                           {"workoutId": 1, "workoutDay": "2026-01-05T00:00:00"}])})
+    assert run(tx.Exporter(full, tmp_path, date(2026, 1, 1), date(2026, 10, 24), retry_delay=0),
+               ["fitness", "workouts"]) == 0
+    # a top-up over the last two days updates 23 Oct, adds 24 Oct and keeps 1 Jan
+    top = FakeClient({"/performancedata/2026-10-23/2026-10-24": Resp(data=[
+                          {"workoutDay": "2026-10-23T00:00:00", "tssActual": 9.0, "ctl": 2.0, "atl": 3.0, "tsb": 0.5},
+                          {"workoutDay": "2026-10-24T00:00:00", "tssActual": 0.0, "ctl": 2.0, "atl": 2.5, "tsb": -1.0}]),
+                      "/workouts/2026-10-23/2026-10-24": Resp(data=[
+                          {"workoutId": 2, "workoutDay": "2026-10-24T00:00:00"}])})
+    assert run(tx.Exporter(top, tmp_path, date(2026, 10, 23), date(2026, 10, 24), retry_delay=0),
+               ["fitness", "workouts"]) == 0
+    rows = json.loads((tmp_path / "notes/tp-archive/fitness/performancedata.json").read_text())
+    assert [(r["workoutDay"][:10], r["tssActual"]) for r in rows] == [
+        ("2026-01-01", 1.0), ("2026-10-23", 9.0), ("2026-10-24", 0.0)]
+    cards = json.loads((tmp_path / "notes/tp-archive/workouts/2026.json").read_text())
+    assert [c["workoutId"] for c in cards] == [1, 2]
+
+
+def test_two_device_files_and_attachment(tmp_path):
+    card = {"workoutId": 1, "workoutDay": "2026-10-20T00:00:00", "totalTime": 1.0}
+    client = FakeClient({
+        "/workouts/2026-10-01/2026-10-24": Resp(data=[card]),
+        "/workouts/1/details": Resp(data={"workoutDeviceFileInfos": [
+            {"fileId": 11, "fileName": "roam.fit.gz"}, {"fileId": 12, "fileName": "watch.fit.gz"}],
+            "attachmentFileInfos": [{"fileId": 13, "fileName": "photo.jpg"}]}),
+        "/rawfiledata/11": Resp(content=b"a"), "/rawfiledata/12": Resp(content=b"b"),
+        "/rawfiledata/13": Resp(content=b"jpg"),
+    })
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    assert run(ex, ["workouts", "files"]) == 0
+    assert ex.stats["device_downloaded"] == 2 and ex.stats["attachment_downloaded"] == 1
+    assert (tmp_path / "notes/tp-archive/attachments/2026/2026-10-20_1_13_photo.jpg").read_bytes() == b"jpg"
+
+
+def test_missing_file_is_redownloaded_and_truncated_details_refetched(tmp_path):
+    raw_calls = []
+    ex = tx.Exporter(FakeClient(_routes(raw_calls)), tmp_path, date(2026, 10, 1), date(2026, 10, 24),
+                     refresh_days=0, retry_delay=0)
+    run(ex, ["workouts", "files"])
+    (tmp_path / "rides/fit/tp-export/2026/2026-10-20_1_11_ride.fit.gz").unlink()
+    (tmp_path / "notes/tp-archive/details/2026/1.json").write_text('{"workoutDevice')   # truncated
+    ex2 = tx.Exporter(FakeClient(_routes(raw_calls)), tmp_path, date(2026, 10, 1), date(2026, 10, 24),
+                      refresh_days=0, retry_delay=0)
+    assert run(ex2, ["files"]) == 0
+    assert len(raw_calls) == 2 and ex2.stats["details_fetched"] == 1
+
+
+def test_recent_details_are_refreshed(tmp_path):
+    raw_calls = []
+    for _ in range(2):
+        ex = tx.Exporter(FakeClient(_routes(raw_calls)), tmp_path, date(2026, 10, 1), date(2026, 10, 24),
+                         refresh_days=14, retry_delay=0)
+        run(ex, ["workouts", "files"])
+    assert ex.stats["details_fetched"] == 1          # 20 Oct is inside the 14-day refresh window
+    assert len(raw_calls) == 1                       # ...but the file itself is already on disk
+
+
+def test_non_retryable_error_is_tried_once(tmp_path):
+    attempts = []
+
+    def missing():
+        attempts.append(1)
+        return Resp(success=False, error_code=Code.NOT_FOUND, message="404")
+
+    client = FakeClient({"/consolidatedtimedmetrics/2026-10-01/2026-10-24": missing})
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    assert run(ex, ["metrics"]) == 1 and len(attempts) == 1
+
+
+def test_empty_file_body_is_a_failure(tmp_path):
+    routes = _routes([])
+    routes["/rawfiledata/11"] = Resp(content=b"")
+    ex = tx.Exporter(FakeClient(routes), tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    assert run(ex, ["workouts", "files"]) == 1
+    assert any("empty file body" in f for f in ex.failures)
+
+
+def test_auth_failure_stops_the_run(tmp_path):
+    class AuthCode(Enum):
+        AUTH_EXPIRED = "AUTH_EXPIRED"
+
+    client = FakeClient({"/workouts/2026-10-01/2026-10-24": Resp(
+        success=False, error_code=AuthCode.AUTH_EXPIRED, message="401")})
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    assert run(ex, ["workouts", "files", "extras"]) == 2
+    assert len(client.calls) == 1                    # nothing after the first auth error
+
+
+def test_files_phase_without_cards_fails(tmp_path):
+    ex = tx.Exporter(FakeClient({}), tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    assert run(ex, ["files"]) == 1
+
+
+def test_limit_takes_most_recent_sessions(tmp_path):
+    cards = [{"workoutId": i, "workoutDay": f"2026-10-{10 + i:02d}T00:00:00", "totalTime": 1.0} for i in range(1, 4)]
+    client = FakeClient({"/workouts/2026-10-01/2026-10-24": Resp(data=cards)})
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), limit=1, retry_delay=0)
+    run(ex, ["workouts", "files"])
+    detail_calls = [e for _, e in client.calls if e.endswith("/details")]
+    assert detail_calls == ["/fitness/v6/athletes/42/workouts/3/details"]
+
+
+def test_cached_cards_respect_the_window(tmp_path):
+    tx.write_json(tmp_path / "notes/tp-archive/workouts/2026.json", [
+        {"workoutId": 1, "workoutDay": "2026-09-30T00:00:00"},
+        {"workoutId": 2, "workoutDay": "2026-10-02T00:00:00"}])
+    ex = tx.Exporter(FakeClient({}), tmp_path, date(2026, 10, 1), date(2026, 10, 24))
+    assert [c["workoutId"] for c in ex._cached_cards()] == [2]
+
+
+def test_limit_rejects_zero():
+    import pytest
+    with pytest.raises(SystemExit):
+        tx.parse_args(["--limit", "0"])
+
+
+def test_old_format_single_object_archive_is_replaced_not_misread(tmp_path):
+    tx.write_json(tmp_path / "notes/tp-archive/extras/atp.json", {"weeks": [1, 2]})   # pre-merge format
+    client = FakeClient({"/atp/2026-10-01/2026-10-24": Resp(data=[{"id": 1, "week": "2026-10-19"}])})
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    run(ex, ["extras"])
+    assert json.loads((tmp_path / "notes/tp-archive/extras/atp.json").read_text()) == [{"id": 1, "week": "2026-10-19"}]
