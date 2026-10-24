@@ -2,7 +2,7 @@ name: cycling
 channels:
   - conda-forge
 dependencies:
-  - python>=3.11
+  - python>=3.11,<3.15   # 3.15: conda-forge pip-api 0.0.34 imports the removed sre_constants, so pip-audit crashes; lift once conda-forge has pip-api>=0.0.35
   - numpy>=1.26
   - scipy>=1.11
   - matplotlib>=3.8
@@ -22,3 +22,7 @@ dependencies:
   - pip
   - pip:
     - fitparse>=1.2
+    # TrainingPeaks MCP server (the `trainingpeaks` MCP in Claude Code). Pinned to a commit on
+    # fmasi's fork: upstream main + reviewed community PRs the maintainer hasn't merged
+    # (#161 #165 #168 #173 #178 #182 #183). Not on PyPI, so pip-audit skips it.
+    - "tp-mcp[browser] @ git+https://github.com/fmasi/trainingpeaks-mcp.git@8f5f8c6056d47b361a1c40aa7bbf7345ed058ee5"

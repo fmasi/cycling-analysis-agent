@@ -262,7 +262,7 @@ Use `scripts/training_load.py` to project forward.
 
 The rider develops on osx-arm64 (Mac) and may also run scripts on linux-64. Any change to Python dependencies must:
 
-1. Be added to `environment.yml` at the repo root using **top-level packages with loose version ranges only** (e.g. `rasterio>=1.3`, `numpy>=1.26`). No build hashes, no platform-specific channels, no fully-pinned exports from `conda env export`.
+1. Be added to `environment.yml` at the repo root using **top-level packages with loose version ranges only** (e.g. `rasterio>=1.3`, `numpy>=1.26`). No build hashes, no platform-specific channels, no fully-pinned exports from `conda env export`. **Exception:** a package that isn't on conda-forge or PyPI (e.g. `tp-mcp`, the TrainingPeaks MCP server) goes under `pip:` as a `git+https://…@<commit-sha>` pin with a comment saying why: a branch or tag ref can move, so only a commit is reproducible.
 2. Resolve cleanly on both osx-arm64 and linux-64.
 3. Be documented in the spec or commit message that introduces the dependency.
 
