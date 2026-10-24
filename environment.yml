@@ -2,7 +2,7 @@ name: cycling
 channels:
   - conda-forge
 dependencies:
-  - python>=3.11
+  - python>=3.11,<3.15   # 3.15: conda-forge pip-api 0.0.34 imports the removed sre_constants, so pip-audit crashes; lift once conda-forge has pip-api>=0.0.35
   - numpy>=1.26
   - scipy>=1.11
   - matplotlib>=3.8
