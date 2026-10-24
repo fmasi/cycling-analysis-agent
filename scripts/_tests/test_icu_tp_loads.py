@@ -40,6 +40,12 @@ def test_manual_entries_only_for_cards_with_tss_and_no_file():
     assert m[0]["type"] == "WeightTraining" and m[0]["icu_training_load"] == 45 and m[0]["moving_time"] == 3600
 
 
+def test_manual_entry_without_duration_gets_a_placeholder():
+    cards = {"5": {"workoutId": 5, "workoutDay": "2026-03-24T00:00:00", "tssActual": 20.0, "totalTime": None}}
+    (e,) = tl.manual_entries(cards, [], date(2026, 1, 1), date(2026, 12, 31))
+    assert e["moving_time"] == 60 and "placeholder" in e["description"]
+
+
 def test_strength_entries_and_matching(tmp_path):
     p = tmp_path / "strength" / "2026"
     p.mkdir(parents=True)

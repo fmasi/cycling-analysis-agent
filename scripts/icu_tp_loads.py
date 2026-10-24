@@ -110,9 +110,11 @@ def manual_entries(cards: dict[str, dict], plan_rows: list[dict], since: date, u
             "start_date_local": start,
             "type": TP_TYPE_TO_ICU.get(c.get("workoutTypeValueId"), "Workout"),
             "name": c.get("title") or "TP session",
-            "moving_time": int((c.get("totalTime") or 0) * 3600),
+            # intervals.icu rejects a zero-duration manual activity; a TP card can carry TSS without time.
+            "moving_time": max(int((c.get("totalTime") or 0) * 3600), 60),
             "icu_training_load": round(tss(c)),
-            "description": "Imported from TrainingPeaks (no file); load = TP TSS.",
+            "description": "Imported from TrainingPeaks (no file); load = TP TSS."
+                           + ("" if c.get("totalTime") else " TP recorded no duration (1 min placeholder)."),
         })
     return out
 
@@ -134,7 +136,7 @@ def strength_entries(archive: Path, since: date, until: date) -> list[dict]:
             "start_date_local": start,
             "type": "WeightTraining",
             "name": d.get("title") or lst.get("title") or "Strength",
-            "moving_time": int(d.get("executedDurationInSeconds") or 0),
+            "moving_time": max(int(d.get("executedDurationInSeconds") or 0), 60),
             "icu_training_load": round(float(load)),
             "description": f"Imported from TrainingPeaks strength builder; load = TP TSS ({d.get('completedTssSource')}).",
         })
@@ -214,6 +216,9 @@ def main(argv: list[str] | None = None) -> int:
     unmatched = [a for a in acts if a["id"] not in targets
                  and not (a.get("external_id") or "").startswith(("tp-manual:", "tp-strength:"))]
     manual = manual_entries(cards, plan_rows, args.since, args.until) + strength_new
+    # Don't rely on the bulk endpoint's upsert (documented for OAuth apps): skip ids already there.
+    present = {a.get("external_id") for a in acts if a.get("external_id")}
+    manual = [e for e in manual if e["external_id"] not in present]
     print(f"{len(acts)} intervals.icu activities in range: {len(changes)} loads to set, "
           f"{len(acts) - len(changes) - len(unmatched)} already right, {len(unmatched)} with no TP match")
     for a in unmatched[:10]:
