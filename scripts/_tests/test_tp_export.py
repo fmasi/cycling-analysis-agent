@@ -111,7 +111,7 @@ def test_has_session():
     assert not tx.has_session({"completed": False, "totalTime": None, "tssPlanned": 60})
 
 
-def _routes(raw_calls):
+def _routes(raw_calls, since="2026-10-01"):
     cards = [
         {"workoutId": 1, "workoutDay": "2026-10-20T00:00:00", "totalTime": 1.0},
         {"workoutId": 2, "workoutDay": "2026-10-22T00:00:00", "totalTime": None},  # planned only
@@ -122,7 +122,7 @@ def _routes(raw_calls):
         return Resp(content=gzip.compress(b"fit-1"))
 
     return {
-        "/workouts/2026-10-01/2026-10-24": Resp(data=cards),
+        f"/workouts/{since}/2026-10-24": Resp(data=cards),
         "/workouts/1/details": Resp(data={"workoutId": 1, "workoutDeviceFileInfos": [
             {"fileId": 11, "fileName": "ride.fit.gz"}]}),
         "/rawfiledata/11": raw,
@@ -143,12 +143,19 @@ def test_files_phase_downloads_once_and_resumes(tmp_path):
     # the planned-only card never triggers a details call
     assert not any(e.endswith("/workouts/2/details") for _, e in client.calls)
 
-    # Second run reuses the cached cards, details and file: no new downloads.
+    # Second run over the same narrow window: details are re-checked (a top-up covers its whole
+    # --since range), but the file already on disk is not downloaded again.
     client2 = FakeClient(_routes(raw_calls))
     ex2 = tx.Exporter(client2, tmp_path, date(2026, 10, 1), date(2026, 10, 24), refresh_days=0, retry_delay=0)
     assert run(ex2, ["files"]) == 0
     assert len(raw_calls) == 1
-    assert ex2.stats["device_cached"] == 1 and ex2.stats["details_cached"] == 1
+    assert ex2.stats["device_cached"] == 1 and ex2.stats["details_fetched"] == 1
+
+    # A full-range run (default --since) trusts cached details older than the refresh window.
+    ex3 = tx.Exporter(FakeClient(_routes(raw_calls)), tmp_path, tx.DEFAULT_SINCE, date(2026, 10, 24),
+                      refresh_days=0, retry_delay=0)
+    assert run(ex3, ["files"]) == 0
+    assert ex3.stats["details_cached"] == 1 and len(raw_calls) == 1
 
 
 def test_fitness_is_one_call_over_the_whole_range(tmp_path):
@@ -254,7 +261,7 @@ def test_missing_file_is_redownloaded_and_truncated_details_refetched(tmp_path):
     run(ex, ["workouts", "files"])
     (tmp_path / "rides/fit/tp-export/2026/2026-10-20_1_11_ride.fit.gz").unlink()
     (tmp_path / "notes/tp-archive/details/2026/1.json").write_text('{"workoutDevice')   # truncated
-    ex2 = tx.Exporter(FakeClient(_routes(raw_calls)), tmp_path, date(2026, 10, 1), date(2026, 10, 24),
+    ex2 = tx.Exporter(FakeClient(_routes(raw_calls)), tmp_path, tx.DEFAULT_SINCE, date(2026, 10, 24),
                       refresh_days=0, retry_delay=0)
     assert run(ex2, ["files"]) == 0
     assert len(raw_calls) == 2 and ex2.stats["details_fetched"] == 1
@@ -335,3 +342,120 @@ def test_old_format_single_object_archive_is_replaced_not_misread(tmp_path):
     ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
     run(ex, ["extras"])
     assert json.loads((tmp_path / "notes/tp-archive/extras/atp.json").read_text()) == [{"id": 1, "week": "2026-10-19"}]
+
+
+def test_forbidden_fails_one_call_but_expired_aborts(tmp_path):
+    class Auth(Enum):
+        AUTH_INVALID = "AUTH_INVALID"
+
+    client = FakeClient({"/performancedata/2026-10-01/2026-10-24": Resp(
+        success=False, error_code=Auth.AUTH_INVALID, message="Access denied. Check your permissions or re-authenticate."),
+        "/consolidatedtimedmetrics/2026-10-01/2026-10-24": Resp(data=[])})
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    assert run(ex, ["fitness", "metrics"]) == 1          # failed, but carried on to metrics
+    assert any(e.endswith("consolidatedtimedmetrics/2026-10-01/2026-10-24") for _, e in client.calls)
+    missing = FakeClient({"/performancedata/2026-10-01/2026-10-24": Resp(
+        success=False, error_code=Auth.AUTH_INVALID, message="No credential found. Run 'tp-mcp auth'.")})
+    ex2 = tx.Exporter(missing, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    assert run(ex2, ["fitness", "metrics"]) == 2 and len(missing.calls) == 1
+
+
+def test_non_list_payload_is_a_failure_not_an_empty_result(tmp_path):
+    tx.write_json(tmp_path / "notes/tp-archive/fitness/performancedata.json",
+                  [{"workoutDay": "2026-10-01T00:00:00", "ctl": 5.0}])
+    client = FakeClient({"/performancedata/2026-10-01/2026-10-24": Resp(data=None)})
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    assert run(ex, ["fitness"]) == 1
+    kept = json.loads((tmp_path / "notes/tp-archive/fitness/performancedata.json").read_text())
+    assert kept == [{"workoutDay": "2026-10-01T00:00:00", "ctl": 5.0}]   # untouched
+
+
+def test_card_moved_to_another_year_leaves_no_stale_copy(tmp_path):
+    tx.write_json(tmp_path / "notes/tp-archive/workouts/2025.json",
+                  [{"workoutId": 9, "workoutDay": "2025-12-31T00:00:00"}, {"workoutId": 8, "workoutDay": "2025-12-30T00:00:00"}])
+    client = FakeClient({"/workouts/2025-12-01/2026-01-31": Resp(data=[
+        {"workoutId": 9, "workoutDay": "2026-01-01T00:00:00"}, {"workoutId": 8, "workoutDay": "2025-12-30T00:00:00"}])})
+    ex = tx.Exporter(client, tmp_path, date(2025, 12, 1), date(2026, 1, 31), retry_delay=0)
+    assert run(ex, ["workouts"]) == 0
+    y25 = json.loads((tmp_path / "notes/tp-archive/workouts/2025.json").read_text())
+    y26 = json.loads((tmp_path / "notes/tp-archive/workouts/2026.json").read_text())
+    assert [c["workoutId"] for c in y25] == [8] and [c["workoutId"] for c in y26] == [9]
+
+
+def test_failed_library_items_keep_the_archived_copy(tmp_path):
+    tx.write_json(tmp_path / "notes/tp-archive/extras/libraries.json",
+                  [{"exerciseLibraryId": 5, "ownerId": 42, "items": [{"itemName": "Z2 60"}]}])
+    client = FakeClient({
+        "/exerciselibrary/v2/libraries": Resp(data=[{"exerciseLibraryId": 5, "ownerId": 42}]),
+        "/libraries/5/items": Resp(success=False, error_code=Code.NOT_FOUND, message="404"),
+    })
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    run(ex, ["extras"])
+    libs = json.loads((tmp_path / "notes/tp-archive/extras/libraries.json").read_text())
+    assert libs[0]["items"] == [{"itemName": "Z2 60"}]
+
+
+def test_strength_phase_archives_list_detail_and_summary(tmp_path):
+    calls = []
+
+    async def strength_get(path):
+        calls.append(path)
+        if "/calendar/" in path:
+            return 200, [{"id": 77, "prescribedDate": "2026-10-04T00:00:00", "completedTss": 16.0}] if "2026" in path else []
+        if path.endswith("/summary"):
+            return 200, {"data": {"totalSets": 0}}
+        return 200, {"data": {"id": 77, "completedTss": 16.0, "files": [{"fileName": "x.fit.gz"}]}}
+
+    ex = tx.Exporter(FakeClient({}), tmp_path, date(2025, 1, 1), date(2026, 10, 24), retry_delay=0,
+                     strength_get=strength_get)
+    assert run(ex, ["strength"]) == 0
+    entry = json.loads((tmp_path / "notes/tp-archive/strength/2026/77.json").read_text())
+    assert entry["detail"]["completedTss"] == 16.0 and entry["summary"] == {"totalSets": 0}
+    assert [w["id"] for w in json.loads((tmp_path / "notes/tp-archive/strength/list.json").read_text())] == [77]
+
+
+def test_strength_http_error_is_reported(tmp_path):
+    async def strength_get(path):
+        return 500, None
+
+    ex = tx.Exporter(FakeClient({}), tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0,
+                     strength_get=strength_get)
+    assert run(ex, ["strength"]) == 1
+
+
+def test_plans_prs_and_private_notes(tmp_path):
+    tx.write_json(tmp_path / "notes/tp-archive/workouts/2026.json", [
+        {"workoutId": 1, "workoutDay": "2026-10-20T00:00:00", "personalRecordCount": 2,
+         "hasPrivateWorkoutNoteForCaller": True},
+        {"workoutId": 2, "workoutDay": "2026-10-21T00:00:00", "personalRecordCount": 0}])
+    client = FakeClient({
+        "/plans/v1/plans": Resp(data=[{"planId": 3, "title": "80/20"}]),
+        "/plans/v1/plans/3": Resp(data={"startDate": "2026-01-05T00:00:00", "dayCount": 10}),
+        "/plans/v1/plans/3/workouts/2026-01-05/2026-01-16": Resp(data=[{"title": "w1"}]),
+        "/personalrecord/v2/athletes/42/Bike": Resp(data=[{"value": 300}]),
+        "/personalrecord/v2/athletes/42/workouts/1": Resp(data=[{"type": "power5min"}]),
+        "/fitness/v6/workouts/1/privateWorkoutNote": Resp(data={"note": "felt good"}),
+    })
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0,
+                     pr_types={"Bike": ["power5min"]})
+    assert run(ex, ["extras"]) == 0
+    extras = tmp_path / "notes/tp-archive/extras"
+    assert json.loads((extras / "plans.json").read_text())[0]["workouts"] == [{"title": "w1"}]
+    assert json.loads((extras / "personal-records.json").read_text()) == {"Bike/power5min": [{"value": 300}]}
+    assert json.loads((extras / "workout-prs.json").read_text()) == {"1": [{"type": "power5min"}]}
+    assert json.loads((extras / "private-workout-notes.json").read_text()) == {"1": {"note": "felt good"}}
+
+
+def test_store_plan_workouts_403_is_counted_not_failed(tmp_path):
+    class Auth(Enum):
+        AUTH_INVALID = "AUTH_INVALID"
+
+    client = FakeClient({
+        "/plans/v1/plans": Resp(data=[{"planId": 3}]),
+        "/plans/v1/plans/3": Resp(data={"startDate": "2026-01-05T00:00:00", "dayCount": 10}),
+        "/plans/v1/plans/3/workouts/2026-01-05/2026-01-16": Resp(
+            success=False, error_code=Auth.AUTH_INVALID, message="Access denied. Check your permissions."),
+    })
+    ex = tx.Exporter(client, tmp_path, date(2026, 10, 1), date(2026, 10, 24), retry_delay=0)
+    assert run(ex, ["extras"]) == 0
+    assert ex.stats["plan_workouts_not_readable"] == 1
