@@ -175,19 +175,17 @@ Combined: **±1.5 km/h on typical climbs, ±2 km/h on flat**. Always state predi
 
 When the rider's specific FTP/MAP/AC/NM values are known, the materialised power zones table lives in `USER_PROFILE.md`.
 
-## HR zone formula (Karvonen)
+## HR zone formula (Coggan, % of LTHR)
 
 ```
-HRR = max_HR − rest_HR
-Z_lower = rest_HR + HRR × pct_lower
-Z_upper = rest_HR + HRR × pct_upper
-
-Z1: 50–65% HRR
-Z2: 65–75% HRR
-Z3: 75–85% HRR
-Z4: 85–92% HRR
-Z5: 92–100% HRR
+Z1 Recovery    <  69% LTHR
+Z2 Endurance   69–83% LTHR
+Z3 Tempo       84–94% LTHR
+Z4 Threshold   95–105% LTHR
+Z5 VO2max      > 105% LTHR
 ```
+
+Anchored on the tested cycling LTHR (`fitness.lthr_bpm`), not Karvonen: it doesn't depend on an uncertain max HR, and HR Z2 lines up with power Z2. The same bpm zones are set in every app the rider looks at (intervals.icu, TrainingPeaks, HealthFit, Apple Watch, Wahoo) so time-in-zone reads the same everywhere. Training load still comes from LTHR (hrTSS / HRSS), not from the zones. Rider decision, 2026-10-24.
 
 ---
 
@@ -213,8 +211,9 @@ Per-climb detail charts are generated for **Cat 3 and harder**; an overview char
 ## Training load definitions
 
 - **TSS** (Training Stress Score) — relative workload of a session, normalised against FTP. Use timer time, never elapsed.
-- **CTL** (Chronic Training Load) — 42-day EMA of daily TSS (`α = 1 − exp(−1/42)`). Proxy for fitness.
-- **ATL** (Acute Training Load) — 7-day EMA of daily TSS (`α = 1 − exp(−1/7)`). Proxy for fatigue.
+- **CTL** (Chronic Training Load) — 42-day EMA of daily TSS, TrainingPeaks' form: `CTL += (TSS − CTL) / 42` (α = 1/42). Proxy for fitness.
+- **ATL** (Acute Training Load) — 7-day EMA of daily TSS, same form: `ATL += (TSS − ATL) / 7` (α = 1/7). Proxy for fatigue.
+  - Why 1/42 and not `1 − exp(−1/42)`: TP's own daily series (2015–2026 export) reproduces exactly with 1/42 and 1/7 and drifts by up to ~5.6 ATL with the exponential α. Matching TP keeps the coach's numbers identical to what the rider sees. Rider decision, 2026-10-24: keep TP's model until there's a reason to change.
 - **TSB** (Training Stress Balance) — **yesterday's CTL − yesterday's ATL** (TP convention, lag-1).
   - This is the form you carry *into* today's training, before today's TSS is applied.
   - Matches what TrainingPeaks displays (tooltip: "yesterday's fitness minus yesterday's fatigue").

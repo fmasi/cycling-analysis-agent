@@ -56,7 +56,7 @@ from it once (`conda env update -n cycling -f environment.yml`).
   values are worked out by hand from the formula, with synthetic inputs, not recomputed with the
   code under test (see `test_training_load.py`). A bug fix comes with a test that fails without it.
 - **The conventions in CLAUDE.md are the spec.** For example: TSB is lag-1 (yesterday's CTL − ATL),
-  CTL/ATL use `1 − exp(−1/42)` and `1 − exp(−1/7)`, TSS uses timer time, W/kg uses body weight and
+  CTL/ATL use TrainingPeaks' α = 1/42 and 1/7, TSS uses timer time, W/kg uses body weight and
   physics uses system weight. Changing one is a coaching decision: say so in the PR description.
 - **Tests are hermetic.** No network (mock map-matching, DEM downloads and the elevation fallback),
   no real DEM tiles, never the real `USER_PROFILE.md`: use the synthetic profile in

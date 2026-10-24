@@ -31,7 +31,7 @@ fitness:
   nm_w: 600                       # Neuromuscular peak (5–15s)
   lthr_bpm: 165                   # Lactate Threshold HR (cycling)
   max_hr_bpm: 190
-  rest_hr_bpm: 55                 # Used by Karvonen HR zones
+  rest_hr_bpm: 55
   max_hr_uncertainty: <e.g. "±5">
 
 # Per-bike physics live under a `bikes:` registry; `default_bike` names the
@@ -150,7 +150,7 @@ Generated from FTP. Cache here for readability.
 
 # HR zones
 
-Generated from max + rest HR via Karvonen.
+Generated from LTHR (Coggan % of LTHR).
 
 # Current fatigue context
 
