@@ -66,7 +66,7 @@ class Candidate:
 
     @property
     def end(self) -> datetime:
-        return self.start + timedelta(seconds=self.duration_s)
+        return self.start + min(timedelta(seconds=self.duration_s), timedelta(hours=24))
 
     @property
     def family(self) -> str:
@@ -111,6 +111,18 @@ def overlaps(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datet
 
 def keeper_order(c: Candidate) -> tuple:
     return (not c.has_power, DEVICE_RANK.get(c.device, 9), -c.duration_s, str(c.path))
+
+
+MAX_SESSION = timedelta(hours=24)
+
+
+def icu_span(a: dict) -> tuple[datetime, datetime]:
+    """(start, end) of an intervals.icu activity. Moving time first: elapsed time can be bogus
+    (a device with an unset clock produced one 2015 ride 'lasting' months), and nothing counts
+    as longer than 24 h, so one broken record can't swallow neighbouring sessions."""
+    s = datetime.fromisoformat(a["start_date"].replace("Z", "+00:00"))
+    dur = timedelta(seconds=a.get("moving_time") or a.get("elapsed_time") or 60)
+    return s, s + min(dur, MAX_SESSION)
 
 
 def same_session(a: Candidate, b: Candidate) -> bool:
@@ -291,9 +303,7 @@ def main(argv: list[str] | None = None) -> int:
                           fields="id,start_date,elapsed_time,moving_time,source,type")
     existing = []
     for a in acts:
-        s = datetime.fromisoformat(a["start_date"].replace("Z", "+00:00"))
-        existing.append((s, s + timedelta(seconds=a.get("elapsed_time") or a.get("moving_time") or 0),
-                         sport_family(a.get("type") or "")))
+        existing.append((*icu_span(a), sport_family(a.get("type") or "")))
 
     log_path = export / "icu-upload-log.csv"
     plan(cands, existing, load_log(log_path), args.defer_rides_from)

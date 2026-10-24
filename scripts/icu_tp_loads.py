@@ -37,7 +37,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from icu_upload_history import compatible, overlaps, sport_family  # noqa: E402
+from icu_upload_history import compatible, icu_span, overlaps, sport_family  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TP_TYPE_TO_ICU = {1: "Swim", 2: "Ride", 3: "Run", 4: "Workout", 5: "Workout", 6: "Workout", 8: "MountainBikeRide",
@@ -86,8 +86,7 @@ def target_loads(acts: list[dict], plan_rows: list[dict], cards: dict[str, dict]
             name = next((n for n, r in by_name.items() if r["workout_id"] == wid and r["file_id"] == fid), None)
             how = "external_id"
         if name is None and a.get("start_date"):
-            s = datetime.fromisoformat(a["start_date"].replace("Z", "+00:00"))
-            e = s + timedelta(seconds=a.get("elapsed_time") or a.get("moving_time") or 0)
+            s, e = icu_span(a)
             fam = sport_family(a.get("type") or "")
             name = next((n for ss, ee, f, n in spans if compatible(fam, f) and overlaps(s, e, ss, ee)), None)
             how = "start-time match"
@@ -223,8 +222,9 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(acts) - len(changes) - len(unmatched)} already right, {len(unmatched)} with no TP match")
     for a in unmatched[:10]:
         print(f"   no TP match: {a.get('start_date_local')} {a.get('type')} {a.get('source')} load {a.get('icu_training_load')}")
-    print(f"{len(manual) - len(strength_new)} TP cards with TSS and no file, {len(strength_new)} strength-builder "
-          f"workouts -> manual activities; {len(strength_assign)} strength sessions matched to existing activities")
+    n_strength = sum(e["external_id"].startswith("tp-strength:") for e in manual)
+    print(f"manual activities to create: {len(manual) - n_strength} file-less TP cards, {n_strength} strength-builder "
+          f"workouts (already present are skipped); {len(strength_assign)} strength sessions matched to existing activities")
     if args.apply:
         for a, load, _ in changes:
             icu.update_activity(a["id"], {"icu_training_load": load})

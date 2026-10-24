@@ -99,3 +99,27 @@ def test_sport_family():
     assert up.sport_family("cycling") == up.sport_family("Ride") == up.sport_family("Biking") == "ride"
     assert up.sport_family("running") == up.sport_family("VirtualRun") == "run"
     assert up.sport_family("tennis") == up.sport_family("53") == "other"
+
+
+def test_icu_duplicates_keeps_our_copy():
+    import icu_duplicates as dup
+    ours = {"id": "i1", "start_date": "2026-05-12T09:00:00Z", "elapsed_time": 3600, "type": "Ride",
+            "external_id": "tp:1:11", "device_watts": True}
+    wahoo = {"id": "i2", "start_date": "2026-05-12T09:00:05Z", "elapsed_time": 3610, "type": "Ride",
+             "source": "WAHOO", "device_watts": True}
+    walk = {"id": "i3", "start_date": "2026-05-12T09:00:00Z", "elapsed_time": 3600, "type": "Walk"}
+    later = {"id": "i4", "start_date": "2026-05-12T11:00:00Z", "elapsed_time": 3600, "type": "Ride"}
+    groups = dup.duplicate_groups([wahoo, walk, ours, later])
+    assert [[a["id"] for a in g] for g in groups] == [["i1", "i2"]]
+
+
+def test_a_bogus_months_long_activity_does_not_swallow_its_neighbours():
+    import icu_duplicates as dup
+    broken = {"id": "b", "start_date": "2015-01-01T00:01:00Z", "elapsed_time": 200 * 86400, "moving_time": 320,
+              "type": "Ride", "external_id": "tp:1:1"}
+    ride = {"id": "r", "start_date": "2015-07-18T08:27:00Z", "elapsed_time": 7200, "moving_time": 7000,
+            "type": "Ride", "external_id": "tp:2:2"}
+    assert dup.duplicate_groups([broken, ride]) == []
+    no_moving = {"id": "n", "start_date": "2015-01-01T00:01:00Z", "elapsed_time": 200 * 86400, "type": "Ride"}
+    s, e = up.icu_span(no_moving)
+    assert (e - s).total_seconds() == 24 * 3600          # capped
