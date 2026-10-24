@@ -37,7 +37,7 @@ from physics_model import (
     FTP, ZONES,
     RIDER_WEIGHT_KG
 )
-from profile import MAX_HR_BPM, REST_HR_BPM
+from profile import LTHR_BPM
 # Climb-detection primitives live in climb_detect (shared with analyse_gpx).
 # Re-exported here so existing `from analyse_fit import find_climbs` keeps working.
 from climb_detect import median_filter_1d, compute_max_grade, find_climbs  # noqa: F401
@@ -173,37 +173,36 @@ def power_curve(power_arr, durations_s=(1, 5, 15, 30, 60, 120, 300, 600, 1200, 1
     return peak_power_curve(power_arr, list(durations_s), missing="omit")
 
 
-def hr_zones_distribution(hr_arr, max_hr=MAX_HR_BPM, rest_hr=REST_HR_BPM):
-    """Time in each Karvonen HR zone (seconds), including a sub-Z1 bucket.
+# Coggan HR zones as fractions of LTHR (CLAUDE.md "HR zone formula"); upper bound exclusive.
+HR_ZONES = [
+    ('Z1 Recovery',  0.00, 0.69),
+    ('Z2 Endurance', 0.69, 0.84),
+    ('Z3 Tempo',     0.84, 0.95),
+    ('Z4 Threshold', 0.95, 1.06),
+    ('Z5 VO2max',    1.06, None),
+]
 
-    The sub-Z1 bucket (HR > 0 but below Z1 floor) captures very-easy /
-    coasting time. Omitting it made easy-spin rides look like "no HR data"
-    when the rider was simply below the Z1 threshold most of the ride.
+
+def hr_zone_bounds(lthr=LTHR_BPM):
+    """[(name, lo_bpm, hi_bpm or None)] for the Coggan LTHR zones, in whole bpm."""
+    return [(name, round(lthr * lo), round(lthr * hi) if hi is not None else None)
+            for name, lo, hi in HR_ZONES]
+
+
+def hr_zones_distribution(hr_arr, lthr=LTHR_BPM):
+    """Time in each Coggan HR zone (seconds), anchored on the tested LTHR.
+
+    LTHR-based (not Karvonen) so the zones don't depend on an uncertain max HR,
+    line up with the power zones, and match intervals.icu / TrainingPeaks / the
+    rider's devices (rider decision, 2026-10-24). Z1 includes coasting time.
     """
     valid = hr_arr[hr_arr > 0]
     if len(valid) == 0:
         return {}
-    # Karvonen: HR_target = (max - rest) * pct + rest
-    bounds = [
-        ('<Z1 Coast',    0.00, 0.50),
-        ('Z1 Recovery',  0.50, 0.60),
-        ('Z2 Aerobic',   0.60, 0.70),
-        ('Z3 Tempo',     0.70, 0.80),
-        ('Z4 Threshold', 0.80, 0.90),
-        ('Z5 VO2max',    0.90, 1.00),
-    ]
-    hrr = max_hr - rest_hr
     out = {}
-    for name, lo, hi in bounds:
-        bpm_lo = rest_hr + hrr * lo
-        bpm_hi = rest_hr + hrr * hi
-        if name == 'Z5 VO2max':
-            count = ((valid >= bpm_lo) & (valid <= max_hr + 10)).sum()
-        elif name == '<Z1 Coast':
-            count = ((valid > 0) & (valid < bpm_hi)).sum()
-        else:
-            count = ((valid >= bpm_lo) & (valid < bpm_hi)).sum()
-        out[name] = int(count)
+    for name, lo, hi in hr_zone_bounds(lthr):
+        mask = valid >= lo if hi is None else (valid >= lo) & (valid < hi)
+        out[name] = int(mask.sum())
     return out
 
 
