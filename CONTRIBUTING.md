@@ -66,7 +66,8 @@ from it once (`conda env update -n cycling -f environment.yml`).
   `plans/`, `body-comp/`, and any `*.fit` / `*.gpx` / `*.tcx` stay gitignored: don't loosen
   `.gitignore`, never `git add -f`. The GPXZ key lives outside the repo (`~/.config/cycling-coach/`).
 - **Dependencies** go in `environment.yml` as top-level packages with loose `>=` floors that resolve
-  on osx-arm64 and linux-64 (CLAUDE.md, "Conda environment portability").
+  on osx-arm64 and linux-64 (CLAUDE.md, "Conda environment portability"). A package on neither
+  conda-forge nor PyPI is the one exception: a `git+https://…@<commit-sha>` pin under `pip:`, with a comment.
 - **Re-exports are deliberate.** Some modules re-export names for their importers (for example
   `physics_model`, with a `# noqa: F401` on each). Don't remove an "unused" import without checking
   who imports it from there.
